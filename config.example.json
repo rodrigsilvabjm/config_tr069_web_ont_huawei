@@ -1,0 +1,30 @@
+{
+  "ont": {
+    "protocol": "https",
+    "port": 80,
+    "targets": [
+      "192.168.88.1",
+      "192.168.88.10-192.168.88.20",
+      "192.168.89.0/30"
+    ],
+    "username": "telecomadmin",
+    "password": "SENHA_DA_ONT"
+  },
+  "tr069": {
+    "acs_url": "http://10.99.99.62:7547",
+    "acs_username": "admin",
+    "acs_password": "SENHA_DO_ACS",
+    "connection_request_username": "",
+    "connection_request_password": "SENHA_CONNECTION_REQUEST",
+    "informing_interval": 43200,
+    "informing_time": "0001-01-01T00:00:00Z",
+    "dscp": 0
+  },
+  "browser": {
+    "timeout_ms": 30000,
+    "ignore_https_errors": true,
+    "tr069_path": "/html/ssmp/tr069/tr069.asp",
+    "headed_finish_wait_ms": 800,
+    "save_success_debug": false
+  }
+}

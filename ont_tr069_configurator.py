@@ -1,0 +1,528 @@
+import argparse
+import asyncio
+import ipaddress
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
+
+
+class OntAutomationError(RuntimeError):
+    pass
+
+
+def print_results(results: list[dict[str, str]]) -> None:
+    print("\nResumo da execucao:")
+    print("-" * 88)
+    print(f"{'ONT':<32} {'STATUS':<10} ERRO")
+    print("-" * 88)
+    for result in results:
+        print(f"{result['target']:<32} {result['status']:<10} {result.get('error', '')}")
+    print("-" * 88)
+    successes = sum(1 for result in results if result["status"] == "SUCESSO")
+    failures = len(results) - successes
+    print(f"Total: {len(results)} | Sucesso: {successes} | Erro: {failures}")
+
+
+async def save_debug_artifacts(page: Page, reason: str) -> None:
+    debug_dir = Path("debug")
+    debug_dir.mkdir(exist_ok=True)
+    safe_reason = "".join(char if char.isalnum() else "_" for char in reason).strip("_").lower()
+    if not safe_reason:
+        safe_reason = "debug"
+    await page.screenshot(path=str(debug_dir / f"{safe_reason}.png"), full_page=True)
+    (debug_dir / f"{safe_reason}.html").write_text(await page.content(), encoding="utf-8")
+
+
+def get_root_page(root: Page | Frame) -> Page:
+    return root.page if isinstance(root, Frame) else root
+
+
+def expand_ip_range(value: str) -> list[str]:
+    start_text, end_text = [part.strip() for part in value.split("-", 1)]
+    start_ip = ipaddress.ip_address(start_text)
+    if "." in end_text:
+        end_ip = ipaddress.ip_address(end_text)
+    else:
+        if start_ip.version != 4:
+            raise OntAutomationError(f"Range abreviado so e suportado para IPv4: {value}")
+        octets = start_text.split(".")
+        octets[-1] = end_text
+        end_ip = ipaddress.ip_address(".".join(octets))
+
+    if start_ip.version != end_ip.version or int(end_ip) < int(start_ip):
+        raise OntAutomationError(f"Range de IP invalido: {value}")
+    return [str(ipaddress.ip_address(ip)) for ip in range(int(start_ip), int(end_ip) + 1)]
+
+
+def expand_targets(ont: dict[str, Any]) -> list[str]:
+    raw_targets = ont.get("targets")
+    if not raw_targets:
+        return [str(ont.get("url") or ont.get("ip")).strip()]
+    if isinstance(raw_targets, str):
+        raw_targets = [raw_targets]
+
+    targets: list[str] = []
+    for item in raw_targets:
+        value = str(item).strip()
+        if not value:
+            continue
+        if "://" in value:
+            targets.append(value)
+        elif "/" in value:
+            network = ipaddress.ip_network(value, strict=False)
+            targets.extend(str(ip) for ip in network.hosts())
+        elif "-" in value:
+            targets.extend(expand_ip_range(value))
+        else:
+            ipaddress.ip_address(value)
+            targets.append(value)
+
+    return list(dict.fromkeys(targets))
+
+
+def build_ont_url(ont: dict[str, Any], target: str) -> str:
+    target = target.strip().rstrip("/")
+    if "://" in target:
+        url = target
+    else:
+        protocol = str(ont.get("protocol", "https")).strip().rstrip(":/")
+        port = ont.get("port")
+        if port is None and ont.get("url"):
+            parsed_default = urlparse(str(ont["url"]))
+            port = parsed_default.port
+            if parsed_default.scheme:
+                protocol = parsed_default.scheme
+        url = f"{protocol}://{target}"
+        if port:
+            url = f"{url}:{port}"
+
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise OntAutomationError("URL da ONT invalida. Exemplo: https://10.100.207.202:80")
+    return f"{url}/index.asp" if parsed.path in {"", "/"} else url
+
+
+def target_label(target: str) -> str:
+    parsed = urlparse(target)
+    return parsed.netloc or target
+
+
+async def proceed_through_privacy_warning(page: Page) -> None:
+    advanced_selectors = [
+        "#details-button",
+        "button:has-text('Avancadas')",
+        "button:has-text('Avançadas')",
+        "button:has-text('Advanced')",
+    ]
+    proceed_selectors = [
+        "#proceed-link",
+        "a:has-text('Prosseguir')",
+        "a:has-text('Proceed')",
+        "text=/Prosseguir para/i",
+        "text=/Proceed to/i",
+    ]
+
+    warning_visible = False
+    for selector in ["#main-message", "text=/ligacao nao e privada/i", "text=/ligação não é privada/i", "text=/connection is not private/i"]:
+        try:
+            await page.locator(selector).first.wait_for(timeout=1200)
+            warning_visible = True
+            break
+        except PlaywrightTimeoutError:
+            continue
+
+    if not warning_visible:
+        return
+
+    for selector in advanced_selectors:
+        try:
+            await page.locator(selector).first.click(timeout=2000)
+            break
+        except Exception:
+            continue
+
+    for selector in proceed_selectors:
+        try:
+            await page.locator(selector).first.click(timeout=3000)
+            await page.wait_for_load_state("domcontentloaded", timeout=10000)
+            return
+        except Exception:
+            continue
+
+    raise OntAutomationError("Apareceu o aviso de certificado, mas nao consegui clicar em Prosseguir.")
+
+
+async def click_first_visible(page: Page, labels: list[str], timeout: int = 2500) -> None:
+    for label in labels:
+        candidates = [
+            page.get_by_text(label, exact=True),
+            page.get_by_role("link", name=label),
+            page.get_by_role("button", name=label),
+        ]
+        for candidate in candidates:
+            try:
+                await candidate.first.click(timeout=timeout)
+                return
+            except PlaywrightTimeoutError:
+                continue
+            except Exception:
+                continue
+    raise OntAutomationError(f"Nao encontrei nenhum item clicavel: {', '.join(labels)}")
+
+
+async def visible_locator(root: Page | Frame, selectors: list[str], timeout: int = 800) -> Locator | None:
+    for selector in selectors:
+        locator = root.locator(selector).first
+        try:
+            await locator.wait_for(state="visible", timeout=timeout)
+            return locator
+        except PlaywrightTimeoutError:
+            continue
+        except Exception:
+            continue
+    return None
+
+
+async def fill_by_label(root: Page | Frame, label_text: str, value: Any) -> None:
+    value = "" if value is None else str(value)
+    label = root.locator(f"text={label_text}").first
+    try:
+        await label.wait_for(timeout=4000)
+    except PlaywrightTimeoutError as exc:
+        raise OntAutomationError(f"Campo nao encontrado: {label_text}") from exc
+
+    row = label.locator("xpath=ancestor::*[self::tr or self::div][1]")
+    inputs = row.locator("input")
+    count = await inputs.count()
+    if count == 0:
+        inputs = label.locator("xpath=following::input[1]")
+        count = await inputs.count()
+    if count == 0:
+        raise OntAutomationError(f"Campo sem input editavel: {label_text}")
+
+    target = inputs.first
+    input_type = (await target.get_attribute("type") or "").lower()
+    if input_type in {"checkbox", "radio"}:
+        if bool(value):
+            await target.check(force=True)
+        else:
+            await target.uncheck(force=True)
+        return
+
+    await target.fill(value)
+
+
+async def try_login(page: Page, username: str, password: str) -> None:
+    await proceed_through_privacy_warning(page)
+
+    user_selectors = [
+        "input[name='txt_Username']",
+        "input[id='txt_Username']",
+        "input[name='User']",
+        "input[id='User']",
+        "input[name='username']",
+        "input[name='Username']",
+        "input[name='UserName']",
+        "input[id='username']",
+        "input[id='Username']",
+        "input[id='UserName']",
+        "input[placeholder*='user' i]",
+        "input[placeholder*='usuario' i]",
+        "input[placeholder*='usuário' i]",
+        "input[id*='user' i]",
+        "input[name*='user' i]",
+        "input[type='text']:visible",
+    ]
+    pass_selectors = [
+        "input[name='txt_Password']",
+        "input[id='txt_Password']",
+        "input[name='Pass']",
+        "input[id='Pass']",
+        "input[name='password']",
+        "input[name='Password']",
+        "input[id='password']",
+        "input[id='Password']",
+        "input[placeholder*='pass' i]",
+        "input[placeholder*='senha' i]",
+        "input[id*='pass' i]",
+        "input[name*='pass' i]",
+        "input[type='password']:visible",
+    ]
+
+    login_root: Page | Frame | None = None
+    user_input: Locator | None = None
+    pass_input: Locator | None = None
+
+    for root in [page, *page.frames]:
+        user_input = await visible_locator(root, user_selectors)
+        pass_input = await visible_locator(root, pass_selectors)
+        if user_input is not None and pass_input is not None:
+            login_root = root
+            break
+
+    if login_root is None or user_input is None or pass_input is None:
+        await page.wait_for_timeout(1500)
+        if await page.locator("text=Home Page").count() or await page.locator("text=Network connection status").count():
+            print("Login nao necessario: a ONT ja parece estar autenticada.")
+            return
+        raise OntAutomationError(
+            "Nao encontrei os campos de usuario/senha."
+        )
+
+    print("Tela de login encontrada. Preenchendo usuario e senha...")
+    await user_input.fill(username)
+    await pass_input.fill(password)
+
+    login_selectors = [
+        "#loginbutton",
+        "#loginBtn",
+        "#btnLogin",
+        "#btn_login",
+        "input[id*='login' i]",
+        "button[id*='login' i]",
+        "input[value='Login']",
+        "input[value='Log In']",
+        "input[value='Entrar']",
+        "input[type='submit']",
+        "button[type='submit']",
+        "button:has-text('Login')",
+        "button:has-text('Log In')",
+        "button:has-text('Entrar')",
+        "a:has-text('Login')",
+        "a:has-text('Entrar')",
+    ]
+    login_button = await visible_locator(login_root, login_selectors, timeout=1200)
+    if login_button is not None:
+        try:
+            await login_button.click(timeout=3000)
+            await page.wait_for_load_state("networkidle", timeout=12000)
+        except Exception:
+            await pass_input.press("Enter")
+    else:
+        await pass_input.press("Enter")
+
+    await page.wait_for_timeout(2500)
+    if await page.locator("input[type='password']:visible").count() > 0:
+        raise OntAutomationError(
+            "A senha foi enviada, mas a tela de login continuou aberta. Confira usuario/senha."
+        )
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except PlaywrightTimeoutError:
+        return
+
+
+async def find_tr069_root(page: Page) -> Page | Frame:
+    roots: list[Page | Frame] = [page, *page.frames]
+    for root in roots:
+        try:
+            if await root.locator("text=ACS Configuration").count() > 0:
+                return root
+            if await root.locator("text=ACS Parameter Settings").count() > 0:
+                return root
+        except Exception:
+            continue
+    raise OntAutomationError("Nao encontrei a tela ACS Configuration/TR-069.")
+
+
+async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any]) -> Page | Frame:
+    base_url = page.url.split("/index.asp")[0].split("/html/")[0].rstrip("/")
+    tr069_path = str(browser_cfg.get("tr069_path", "/html/ssmp/tr069/tr069.asp"))
+    if not tr069_path.startswith("/"):
+        tr069_path = f"/{tr069_path}"
+
+    try:
+        print(f"Abrindo TR-069 diretamente em {tr069_path}...")
+        await page.goto(f"{base_url}{tr069_path}", wait_until="domcontentloaded", timeout=8000)
+        await proceed_through_privacy_warning(page)
+        return await find_tr069_root(page)
+    except Exception:
+        print("Caminho direto nao abriu a tela TR-069. Tentando pelo menu da ONT...")
+
+    await page.goto(f"{base_url}/index.asp", wait_until="domcontentloaded")
+    await proceed_through_privacy_warning(page)
+    for selector in ["#addconfig", "#systool", "#tr069config"]:
+        try:
+            item = page.locator(selector)
+            if await item.count() == 1:
+                await item.click(timeout=2500)
+        except Exception:
+            continue
+    try:
+        await click_first_visible(page, ["Advanced"], timeout=1200)
+    except OntAutomationError:
+        pass
+    try:
+        await click_first_visible(page, ["System Management", "System Manage"], timeout=1200)
+    except OntAutomationError:
+        pass
+    try:
+        await click_first_visible(page, ["TR-069", "TR069"], timeout=1200)
+    except OntAutomationError:
+        pass
+    await page.wait_for_load_state("networkidle", timeout=10000)
+    return await find_tr069_root(page)
+
+
+async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_run: bool, save_success_debug: bool) -> None:
+    await fill_by_label(root, "Enable ACS Management:", True)
+    await fill_by_label(root, "Enable Periodic Informing:", True)
+    await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
+    await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+    await fill_by_label(root, "ACS URL:", tr069["acs_url"])
+    await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
+    await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""))
+    await fill_by_label(root, "Connection Request User Name:", tr069.get("connection_request_username", ""))
+    await fill_by_label(root, "Connection Request Password:", tr069.get("connection_request_password", ""))
+    await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
+    if save_success_debug:
+        await save_debug_artifacts(get_root_page(root), "before_apply_tr069")
+
+    if dry_run:
+        print("Dry-run ativo: campos preenchidos, mas Apply nao foi clicado.")
+        return
+
+    print("Campos TR-069 preenchidos. Clicando no Apply da configuracao ACS...")
+    apply_selectors = [
+        "#ACSbtnApply",
+        "input[id='ACSbtnApply']",
+        "input[onclick*='SubmitAcsConfig']",
+        "input[value='Apply'][onclick*='Acs']",
+        "input[value='Apply'][onclick*='ACS']",
+    ]
+    for selector in apply_selectors:
+        button = root.locator(selector)
+        try:
+            if await button.count() == 1:
+                await button.click(timeout=4000)
+                return
+        except Exception:
+            continue
+
+    buttons = root.locator("input[value='Apply'], button:has-text('Apply')")
+    count = await buttons.count()
+    if count == 1:
+        await buttons.click(timeout=4000)
+        return
+
+    raise OntAutomationError(
+        f"Encontrei {count} botoes Apply e nao consegui identificar o ACS. "
+        "O botao esperado e #ACSbtnApply."
+    )
+
+
+async def process_target(
+    context: Any,
+    config: dict[str, Any],
+    target: str,
+    headed: bool,
+    dry_run: bool,
+) -> dict[str, str]:
+    ont = config["ont"]
+    browser_cfg = config.get("browser", {})
+    timeout_ms = int(browser_cfg.get("timeout_ms", 30000))
+    ont_url = build_ont_url(ont, target)
+    label = target_label(target)
+    page: Page | None = None
+
+    try:
+        print(f"\n[{label}] Iniciando configuracao...")
+        page = await context.new_page()
+        page.set_default_timeout(timeout_ms)
+
+        await page.goto(ont_url, wait_until="domcontentloaded")
+        await proceed_through_privacy_warning(page)
+        await try_login(page, ont["username"], ont["password"])
+        tr069_root = await navigate_to_tr069(page, browser_cfg)
+        await apply_tr069_settings(
+            tr069_root,
+            config["tr069"],
+            dry_run=dry_run,
+            save_success_debug=bool(browser_cfg.get("save_success_debug", False)),
+        )
+
+        if headed:
+            await page.wait_for_timeout(int(browser_cfg.get("headed_finish_wait_ms", 500)))
+        await page.close()
+        return {"target": label, "status": "SUCESSO", "error": ""}
+    except Exception as exc:
+        if page is not None:
+            try:
+                await save_debug_artifacts(page, f"{label}_error")
+                await page.close()
+            except Exception:
+                pass
+        return {"target": label, "status": "ERRO", "error": str(exc)}
+
+
+async def run(config: dict[str, Any], headed: bool, dry_run: bool) -> None:
+    ont = config["ont"]
+    browser_cfg = config.get("browser", {})
+    targets = expand_targets(ont)
+    results: list[dict[str, str]] = []
+
+    async with async_playwright() as p:
+        browser: Browser = await p.chromium.launch(
+            headless=not headed,
+            args=["--ignore-certificate-errors"],
+        )
+        context = await browser.new_context(
+            ignore_https_errors=bool(browser_cfg.get("ignore_https_errors", True))
+        )
+
+        for target in targets:
+            results.append(await process_target(context, config, target, headed=headed, dry_run=dry_run))
+        await browser.close()
+
+    print_results(results)
+    if any(result["status"] == "ERRO" for result in results):
+        raise SystemExit(1)
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise OntAutomationError(f"Arquivo de configuracao nao existe: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            config = json.load(file)
+    except json.JSONDecodeError as exc:
+        raise OntAutomationError(
+            f"JSON invalido em {path}: linha {exc.lineno}, coluna {exc.colno}. "
+            "Confira chaves, aspas, virgulas e se o arquivo comeca com { e termina com }."
+        ) from exc
+
+    for key in ("ont", "tr069"):
+        if key not in config:
+            raise OntAutomationError(f"Config sem bloco obrigatorio: {key}")
+    if not config["ont"].get("targets") and not config["ont"].get("url") and not config["ont"].get("ip"):
+        raise OntAutomationError("Config precisa de ont.targets, ont.url ou ont.ip.")
+    for key in ("username", "password"):
+        if not config["ont"].get(key):
+            raise OntAutomationError(f"Config ont.{key} esta vazio.")
+    if not config["tr069"].get("acs_url"):
+        raise OntAutomationError("Config tr069.acs_url esta vazio.")
+    return config
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Configura TR-069/ACS em ONT Huawei pela interface web.")
+    parser.add_argument("--config", default="config.json", help="Caminho do arquivo JSON de configuracao.")
+    parser.add_argument("--headed", action="store_true", help="Mostra o navegador durante a automacao.")
+    parser.add_argument("--dry-run", action="store_true", help="Preenche os campos, mas nao clica em Apply.")
+    args = parser.parse_args()
+
+    try:
+        config = load_config(Path(args.config))
+        asyncio.run(run(config, headed=args.headed, dry_run=args.dry_run))
+        print("Configuracao TR-069 concluida.")
+    except Exception as exc:
+        raise SystemExit(f"Erro: {exc}") from exc
+
+
+if __name__ == "__main__":
+    main()
