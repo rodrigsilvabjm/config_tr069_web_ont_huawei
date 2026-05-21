@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.7"
 
 
 class OntAutomationError(RuntimeError):
@@ -319,9 +319,10 @@ async def fill_by_label(root: Page | Frame, label_text: str, value: Any, verify:
 
 
 async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
+    current_interval = await read_input_value(await input_after_label(root, "Informing Interval:"))
     await fill_by_label(root, "Enable ACS Management:", True)
     await fill_by_label(root, "Enable Periodic Informing:", True)
-    await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
+    await fill_by_label(root, "Informing Interval:", current_interval)
     await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
     await fill_by_label(root, "ACS URL:", tr069["acs_url"])
     await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
@@ -333,7 +334,6 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
 
 async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     expected_values = {
-        "Informing Interval:": str(tr069.get("informing_interval", 43200)),
         "Informing Time:": str(tr069.get("informing_time", "0001-01-01T00:00:00Z")),
         "ACS URL:": str(tr069["acs_url"]),
         "ACS User Name:": str(tr069.get("acs_username", "")),
@@ -555,7 +555,19 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: di
     return await find_tr069_root(page)
 
 
-async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_run: bool, save_success_debug: bool, profile: dict[str, Any]) -> None:
+async def pause_for_inspection(message: str) -> None:
+    print(message)
+    await asyncio.to_thread(input, "Pressione Enter para continuar...")
+
+
+async def apply_tr069_settings(
+    root: Page | Frame,
+    tr069: dict[str, Any],
+    dry_run: bool,
+    save_success_debug: bool,
+    profile: dict[str, Any],
+    inspect: bool = False,
+) -> None:
     if profile.get("name") == "HG8245Q2":
         await fill_hg8245q2_acs(root, tr069)
     else:
@@ -571,6 +583,11 @@ async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_ru
         await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
     if save_success_debug:
         await save_debug_artifacts(get_root_page(root), "before_apply_tr069")
+
+    if inspect:
+        await pause_for_inspection(
+            "Modo inspecao: confira no Chromium se os campos TR-069 foram preenchidos corretamente."
+        )
 
     if dry_run:
         print("Dry-run ativo: campos preenchidos, mas Apply nao foi clicado.")
@@ -626,6 +643,7 @@ async def process_target(
     target: str,
     headed: bool,
     dry_run: bool,
+    inspect: bool = False,
 ) -> dict[str, str]:
     ont = config["ont"]
     browser_cfg = config.get("browser", {})
@@ -653,6 +671,7 @@ async def process_target(
             dry_run=dry_run,
             save_success_debug=bool(browser_cfg.get("save_success_debug", False)),
             profile=profile,
+            inspect=inspect,
         )
         if not dry_run:
             await verify_after_apply(page, browser_cfg, profile, config["tr069"])
@@ -677,7 +696,7 @@ async def process_target(
         return {"target": label, "model": locals().get("model", ""), "profile": locals().get("profile", {}).get("name", ""), "status": "ERRO", "error": str(exc)}
 
 
-async def run(config: dict[str, Any], headed: bool, dry_run: bool) -> None:
+async def run(config: dict[str, Any], headed: bool, dry_run: bool, inspect: bool = False) -> None:
     ont = config["ont"]
     browser_cfg = config.get("browser", {})
     targets = expand_targets(ont)
@@ -693,7 +712,16 @@ async def run(config: dict[str, Any], headed: bool, dry_run: bool) -> None:
         )
 
         for target in targets:
-            results.append(await process_target(context, config, target, headed=headed, dry_run=dry_run))
+            results.append(
+                await process_target(
+                    context,
+                    config,
+                    target,
+                    headed=headed,
+                    dry_run=dry_run,
+                    inspect=inspect,
+                )
+            )
         await browser.close()
 
     print_results(results)
@@ -732,11 +760,16 @@ def main() -> None:
     parser.add_argument("--config", default="config.json", help="Caminho do arquivo JSON de configuracao.")
     parser.add_argument("--headed", action="store_true", help="Mostra o navegador durante a automacao.")
     parser.add_argument("--dry-run", action="store_true", help="Preenche os campos, mas nao clica em Apply.")
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Pausa antes do Apply para inspecionar a tela preenchida no Chromium.",
+    )
     args = parser.parse_args()
 
     try:
         config = load_config(Path(args.config))
-        asyncio.run(run(config, headed=args.headed, dry_run=args.dry_run))
+        asyncio.run(run(config, headed=True if args.inspect else args.headed, dry_run=args.dry_run, inspect=args.inspect))
         print("Configuracao TR-069 concluida.")
     except Exception as exc:
         raise SystemExit(f"Erro: {exc}") from exc

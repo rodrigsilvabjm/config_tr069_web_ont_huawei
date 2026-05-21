@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.2.5`
+Versao atual: `1.2.7`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
@@ -97,6 +97,14 @@ Para simular sem clicar em `Apply`:
 ```powershell
 python .\ont_tr069_configurator.py --config .\config.json --dry-run --headed
 ```
+
+Para depurar visualmente no Chromium e pausar antes do Apply:
+
+```powershell
+python .\ont_tr069_configurator.py --config .\config.json --inspect --dry-run
+```
+
+Com `--inspect`, o navegador abre, preenche os campos e o terminal espera Enter. Assim voce consegue conferir se a tela foi preenchida antes de aplicar em producao.
 
 Para este firmware, o caminho direto da tela TR-069 e:
 
