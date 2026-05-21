@@ -499,11 +499,14 @@ INDEX_HTML = r"""<!doctype html>
     textarea { min-height: 120px; resize: vertical; }
     button { margin-top: 14px; padding: 10px 14px; border: 0; border-radius: 5px; background: #1769aa; color: white; font-weight: 700; cursor: pointer; }
     button.secondary { background: #5b6875; }
+    button.small { margin-top: 0; padding: 6px 10px; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
     th, td { border-bottom: 1px solid #edf1f5; padding: 8px; text-align: left; vertical-align: top; }
     .ok { color: #137333; font-weight: 700; }
     .err { color: #b3261e; font-weight: 700; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .toolbar select { width: auto; margin-top: 0; padding: 6px 8px; }
     .muted { color: #5b6875; font-size: 13px; }
     canvas { max-width: 320px; max-height: 220px; }
     @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
@@ -560,6 +563,19 @@ INDEX_HTML = r"""<!doctype html>
 
     <section style="grid-column: 1 / -1;">
       <h2>Histórico</h2>
+      <div class="toolbar">
+        <span class="muted">Mostrar</span>
+        <select id="historyPageSize" onchange="changeHistoryPageSize()">
+          <option value="5" selected>5</option>
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+        <span class="muted">por página</span>
+        <button class="secondary small" onclick="previousHistoryPage()">Anterior</button>
+        <button class="secondary small" onclick="nextHistoryPage()">Próxima</button>
+        <span class="muted" id="historyPageInfo">Página 1 de 1</span>
+      </div>
       <table>
         <thead><tr><th>Data</th><th>Status</th><th>Total</th><th>Sucesso</th><th>Erro</th><th>XLS</th></tr></thead>
         <tbody id="history"></tbody>
@@ -568,6 +584,8 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <script>
     let currentJob = null;
+    let historyItems = [];
+    let historyPage = 1;
     const $ = id => document.getElementById(id);
 
     function headers() {
@@ -610,8 +628,34 @@ INDEX_HTML = r"""<!doctype html>
 
     async function loadHistory() {
       const res = await fetch("/api/history", { headers: headers() });
-      const items = await res.json();
-      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td><td><button class="secondary" onclick="exportJobXls('${j.id}')">XLS</button></td></tr>`).join("");
+      historyItems = await res.json();
+      historyPage = 1;
+      renderHistory();
+    }
+
+    function renderHistory() {
+      const pageSize = Number($("historyPageSize").value || 5);
+      const totalPages = Math.max(1, Math.ceil(historyItems.length / pageSize));
+      historyPage = Math.min(Math.max(historyPage, 1), totalPages);
+      const start = (historyPage - 1) * pageSize;
+      const items = historyItems.slice(start, start + pageSize);
+      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td><td><button class="secondary small" onclick="exportJobXls('${j.id}')">XLS</button></td></tr>`).join("");
+      $("historyPageInfo").textContent = `Página ${historyPage} de ${totalPages} | ${historyItems.length} registros`;
+    }
+
+    function changeHistoryPageSize() {
+      historyPage = 1;
+      renderHistory();
+    }
+
+    function previousHistoryPage() {
+      historyPage -= 1;
+      renderHistory();
+    }
+
+    function nextHistoryPage() {
+      historyPage += 1;
+      renderHistory();
     }
 
     function exportJobXls(id) {
