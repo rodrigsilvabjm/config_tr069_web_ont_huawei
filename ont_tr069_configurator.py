@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 
 class OntAutomationError(RuntimeError):
@@ -253,33 +253,93 @@ async def visible_locator(root: Page | Frame, selectors: list[str], timeout: int
     return None
 
 
-async def fill_by_label(root: Page | Frame, label_text: str, value: Any) -> None:
+async def input_after_label(root: Page | Frame, label_text: str) -> Locator:
+    xpath = (
+        "xpath=//*[normalize-space(.)="
+        f"{json.dumps(label_text)}"
+        f" or contains(normalize-space(.), {json.dumps(label_text)})]/following::input[1]"
+    )
+    locator = root.locator(xpath).first
+    await locator.wait_for(state="attached", timeout=4000)
+    return locator
+
+
+async def set_input_value(locator: Locator, value: Any) -> None:
     value = "" if value is None else str(value)
-    label = root.locator(f"text={label_text}").first
+    input_type = (await locator.get_attribute("type") or "").lower()
+    if input_type in {"checkbox", "radio"}:
+        if bool(value):
+            await locator.check(force=True)
+        else:
+            await locator.uncheck(force=True)
+        return
+
+    await locator.fill(value)
+
+
+async def read_input_value(locator: Locator) -> str:
+    input_type = (await locator.get_attribute("type") or "").lower()
+    if input_type in {"checkbox", "radio"}:
+        return "true" if await locator.is_checked() else "false"
+    return await locator.input_value()
+
+
+async def fill_by_label(root: Page | Frame, label_text: str, value: Any, verify: bool = True) -> None:
     try:
-        await label.wait_for(timeout=4000)
+        target = await input_after_label(root, label_text)
     except PlaywrightTimeoutError as exc:
         raise OntAutomationError(f"Campo nao encontrado: {label_text}") from exc
 
-    row = label.locator("xpath=ancestor::*[self::tr or self::div][1]")
-    inputs = row.locator("input")
+    await set_input_value(target, value)
+    if verify and (await target.get_attribute("type") or "").lower() not in {"password"}:
+        actual = await read_input_value(target)
+        expected = "" if value is None else str(value)
+        if actual != expected and expected.lower() not in {"true", "false"}:
+            raise OntAutomationError(f"Campo {label_text} nao foi preenchido. Esperado {expected}, ficou {actual}.")
+
+
+async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
+    inputs = root.locator(
+        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[not(@type='button')][position() <= 10]"
+    )
     count = await inputs.count()
-    if count == 0:
-        inputs = label.locator("xpath=following::input[1]")
-        count = await inputs.count()
-    if count == 0:
-        raise OntAutomationError(f"Campo sem input editavel: {label_text}")
+    if count < 10:
+        raise OntAutomationError(f"HG8245Q2: esperava pelo menos 10 campos ACS, encontrei {count}.")
 
-    target = inputs.first
-    input_type = (await target.get_attribute("type") or "").lower()
-    if input_type in {"checkbox", "radio"}:
-        if bool(value):
-            await target.check(force=True)
-        else:
-            await target.uncheck(force=True)
-        return
+    values = [
+        True,
+        True,
+        tr069.get("informing_interval", 43200),
+        tr069.get("informing_time", "0001-01-01T00:00:00Z"),
+        tr069["acs_url"],
+        tr069.get("acs_username", ""),
+        tr069.get("acs_password", ""),
+        tr069.get("connection_request_username", ""),
+        tr069.get("connection_request_password", ""),
+        tr069.get("dscp", 0),
+    ]
+    names = [
+        "Enable ACS Management",
+        "Enable Periodic Informing",
+        "Informing Interval",
+        "Informing Time",
+        "ACS URL",
+        "ACS User Name",
+        "ACS Password",
+        "Connection Request User Name",
+        "Connection Request Password",
+        "DSCP",
+    ]
 
-    await target.fill(value)
+    for index, value in enumerate(values):
+        locator = inputs.nth(index)
+        await set_input_value(locator, value)
+        input_type = (await locator.get_attribute("type") or "").lower()
+        if input_type != "password":
+            actual = await read_input_value(locator)
+            expected = "true" if value is True else "false" if value is False else str(value)
+            if actual != expected:
+                raise OntAutomationError(f"HG8245Q2: campo {names[index]} nao foi preenchido. Esperado {expected}, ficou {actual}.")
 
 
 async def try_login(page: Page, username: str, password: str) -> None:
@@ -429,17 +489,20 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: di
     return await find_tr069_root(page)
 
 
-async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_run: bool, save_success_debug: bool) -> None:
-    await fill_by_label(root, "Enable ACS Management:", True)
-    await fill_by_label(root, "Enable Periodic Informing:", True)
-    await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
-    await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
-    await fill_by_label(root, "ACS URL:", tr069["acs_url"])
-    await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
-    await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""))
-    await fill_by_label(root, "Connection Request User Name:", tr069.get("connection_request_username", ""))
-    await fill_by_label(root, "Connection Request Password:", tr069.get("connection_request_password", ""))
-    await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
+async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_run: bool, save_success_debug: bool, profile: dict[str, Any]) -> None:
+    if profile.get("name") == "HG8245Q2":
+        await fill_hg8245q2_acs(root, tr069)
+    else:
+        await fill_by_label(root, "Enable ACS Management:", True)
+        await fill_by_label(root, "Enable Periodic Informing:", True)
+        await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
+        await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+        await fill_by_label(root, "ACS URL:", tr069["acs_url"])
+        await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
+        await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""), verify=False)
+        await fill_by_label(root, "Connection Request User Name:", tr069.get("connection_request_username", ""))
+        await fill_by_label(root, "Connection Request Password:", tr069.get("connection_request_password", ""), verify=False)
+        await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
     if save_success_debug:
         await save_debug_artifacts(get_root_page(root), "before_apply_tr069")
 
@@ -540,6 +603,7 @@ async def process_target(
             config["tr069"],
             dry_run=dry_run,
             save_success_debug=bool(browser_cfg.get("save_success_debug", False)),
+            profile=profile,
         )
         if not dry_run:
             await logout_ont(page)

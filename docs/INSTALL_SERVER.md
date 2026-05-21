@@ -29,7 +29,7 @@ Ou rode novamente o instalador com a mesma URL do repositorio.
 ## Instalar versao especifica
 
 ```bash
-sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.2.0 --port 8080
+sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.2.1 --port 8080
 ```
 
 Rollback:
