@@ -12,17 +12,40 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
+APP_VERSION = "1.2.0"
+
+
 class OntAutomationError(RuntimeError):
     pass
+
+
+MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    "HG8245W5-6T": {
+        "name": "HG8245W5-6T",
+        "tr069_paths": ["/html/ssmp/tr069/tr069.asp"],
+        "menu_sequence": ["Advanced", "System Management", "TR-069"],
+    },
+    "HG8245Q2": {
+        "name": "HG8245Q2",
+        "tr069_paths": [],
+        "menu_sequence": ["System Tools", "TR-069"],
+    },
+}
+
+DEFAULT_PROFILE = {
+    "name": "default",
+    "tr069_paths": ["/html/ssmp/tr069/tr069.asp"],
+    "menu_sequence": ["Advanced", "System Management", "System Tools", "TR-069"],
+}
 
 
 def print_results(results: list[dict[str, str]]) -> None:
     print("\nResumo da execucao:")
     print("-" * 88)
-    print(f"{'ONT':<32} {'STATUS':<10} ERRO")
+    print(f"{'ONT':<32} {'MODELO':<16} {'STATUS':<10} ERRO")
     print("-" * 88)
     for result in results:
-        print(f"{result['target']:<32} {result['status']:<10} {result.get('error', '')}")
+        print(f"{result['target']:<32} {result.get('model', ''):<16} {result['status']:<10} {result.get('error', '')}")
     print("-" * 88)
     successes = sum(1 for result in results if result["status"] == "SUCESSO")
     failures = len(results) - successes
@@ -111,6 +134,47 @@ def build_ont_url(ont: dict[str, Any], target: str) -> str:
 def target_label(target: str) -> str:
     parsed = urlparse(target)
     return parsed.netloc or target
+
+
+async def detect_ont_model(page: Page) -> str:
+    candidates: list[str] = []
+    try:
+        candidates.append(await page.title())
+    except Exception:
+        pass
+
+    for selector in ["#headerProductName", "#headerProductNameOrg", "#headerProductNamePar", "body"]:
+        try:
+            text = await page.locator(selector).first.text_content(timeout=1200)
+            if text:
+                candidates.append(text)
+        except Exception:
+            continue
+
+    joined = " ".join(candidates).upper()
+    for model in MODEL_PROFILES:
+        if model.upper() in joined:
+            return model
+
+    return "UNKNOWN"
+
+
+def profile_for_model(model: str, browser_cfg: dict[str, Any]) -> dict[str, Any]:
+    profile = deepcopy_profile(MODEL_PROFILES.get(model, DEFAULT_PROFILE))
+    custom_paths = browser_cfg.get("tr069_paths")
+    if isinstance(custom_paths, list) and custom_paths:
+        profile["tr069_paths"] = custom_paths
+    elif browser_cfg.get("tr069_path") and profile["name"] != "HG8245Q2":
+        profile["tr069_paths"] = [browser_cfg["tr069_path"]]
+    return profile
+
+
+def deepcopy_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": profile.get("name", "default"),
+        "tr069_paths": list(profile.get("tr069_paths", [])),
+        "menu_sequence": list(profile.get("menu_sequence", [])),
+    }
 
 
 async def proceed_through_privacy_warning(page: Page) -> None:
@@ -332,19 +396,19 @@ async def find_tr069_root(page: Page) -> Page | Frame:
     raise OntAutomationError("Nao encontrei a tela ACS Configuration/TR-069.")
 
 
-async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any]) -> Page | Frame:
+async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: dict[str, Any]) -> Page | Frame:
     base_url = page.url.split("/index.asp")[0].split("/html/")[0].rstrip("/")
-    tr069_path = str(browser_cfg.get("tr069_path", "/html/ssmp/tr069/tr069.asp"))
-    if not tr069_path.startswith("/"):
-        tr069_path = f"/{tr069_path}"
-
-    try:
-        print(f"Abrindo TR-069 diretamente em {tr069_path}...")
-        await page.goto(f"{base_url}{tr069_path}", wait_until="domcontentloaded", timeout=8000)
-        await proceed_through_privacy_warning(page)
-        return await find_tr069_root(page)
-    except Exception:
-        print("Caminho direto nao abriu a tela TR-069. Tentando pelo menu da ONT...")
+    for raw_path in profile.get("tr069_paths", []):
+        tr069_path = str(raw_path)
+        if not tr069_path.startswith("/"):
+            tr069_path = f"/{tr069_path}"
+        try:
+            print(f"Abrindo TR-069 diretamente em {tr069_path}...")
+            await page.goto(f"{base_url}{tr069_path}", wait_until="domcontentloaded", timeout=8000)
+            await proceed_through_privacy_warning(page)
+            return await find_tr069_root(page)
+        except Exception:
+            print("Caminho direto nao abriu a tela TR-069. Tentando proxima opcao...")
 
     await page.goto(f"{base_url}/index.asp", wait_until="domcontentloaded")
     await proceed_through_privacy_warning(page)
@@ -355,18 +419,12 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any]) -> Page | F
                 await item.click(timeout=2500)
         except Exception:
             continue
-    try:
-        await click_first_visible(page, ["Advanced"], timeout=1200)
-    except OntAutomationError:
-        pass
-    try:
-        await click_first_visible(page, ["System Management", "System Manage"], timeout=1200)
-    except OntAutomationError:
-        pass
-    try:
-        await click_first_visible(page, ["TR-069", "TR069"], timeout=1200)
-    except OntAutomationError:
-        pass
+    for menu_label in profile.get("menu_sequence", []):
+        try:
+            await click_first_visible(page, [menu_label], timeout=1600)
+            await page.wait_for_timeout(300)
+        except OntAutomationError:
+            pass
     await page.wait_for_load_state("networkidle", timeout=10000)
     return await find_tr069_root(page)
 
@@ -396,6 +454,8 @@ async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_ru
         "input[onclick*='SubmitAcsConfig']",
         "input[value='Apply'][onclick*='Acs']",
         "input[value='Apply'][onclick*='ACS']",
+        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[@value='Apply'][1]",
+        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::button[contains(normalize-space(.), 'Apply')][1]",
     ]
     for selector in apply_selectors:
         button = root.locator(selector)
@@ -471,7 +531,10 @@ async def process_target(
         await page.goto(ont_url, wait_until="domcontentloaded")
         await proceed_through_privacy_warning(page)
         await try_login(page, ont["username"], ont["password"])
-        tr069_root = await navigate_to_tr069(page, browser_cfg)
+        model = await detect_ont_model(page)
+        profile = profile_for_model(model, browser_cfg)
+        print(f"[{label}] Modelo detectado: {model}. Perfil: {profile['name']}")
+        tr069_root = await navigate_to_tr069(page, browser_cfg, profile)
         await apply_tr069_settings(
             tr069_root,
             config["tr069"],
@@ -484,7 +547,7 @@ async def process_target(
         if headed:
             await page.wait_for_timeout(int(browser_cfg.get("headed_finish_wait_ms", 500)))
         await page.close()
-        return {"target": label, "status": "SUCESSO", "error": ""}
+        return {"target": label, "model": model, "profile": profile["name"], "status": "SUCESSO", "error": ""}
     except Exception as exc:
         if page is not None:
             try:
@@ -492,7 +555,7 @@ async def process_target(
                 await page.close()
             except Exception:
                 pass
-        return {"target": label, "status": "ERRO", "error": str(exc)}
+        return {"target": label, "model": locals().get("model", ""), "profile": locals().get("profile", {}).get("name", ""), "status": "ERRO", "error": str(exc)}
 
 
 async def run(config: dict[str, Any], headed: bool, dry_run: bool) -> None:
@@ -546,6 +609,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Configura TR-069/ACS em ONT Huawei pela interface web.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     parser.add_argument("--config", default="config.json", help="Caminho do arquivo JSON de configuracao.")
     parser.add_argument("--headed", action="store_true", help="Mostra o navegador durante a automacao.")
     parser.add_argument("--dry-run", action="store_true", help="Preenche os campos, mas nao clica em Apply.")

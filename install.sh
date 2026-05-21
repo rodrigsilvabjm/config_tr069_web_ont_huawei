@@ -6,9 +6,10 @@ APP_USER="onttr069"
 APP_PORT="8080"
 REPO_URL=""
 WEB_TOKEN=""
+GIT_REF=""
 
 usage() {
-  echo "Uso: sudo bash install.sh --repo https://github.com/USUARIO/REPO.git [--port 8080]"
+  echo "Uso: sudo bash install.sh --repo https://github.com/USUARIO/REPO.git [--ref main|v1.2.0] [--port 8080]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -27,6 +28,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       APP_PORT="${2:-}"
+      shift 2
+      ;;
+    --ref)
+      GIT_REF="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -63,10 +68,18 @@ fi
 
 if [[ -d "$APP_DIR/.git" ]]; then
   git config --global --add safe.directory "$APP_DIR" || true
-  git -C "$APP_DIR" pull --ff-only
+  git -C "$APP_DIR" fetch --all --tags
+  if [[ -n "$GIT_REF" ]]; then
+    git -C "$APP_DIR" checkout "$GIT_REF"
+  else
+    git -C "$APP_DIR" pull --ff-only
+  fi
 else
   rm -rf "$APP_DIR"
   git clone "$REPO_URL" "$APP_DIR"
+  if [[ -n "$GIT_REF" ]]; then
+    git -C "$APP_DIR" checkout "$GIT_REF"
+  fi
 fi
 
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"

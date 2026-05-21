@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from ont_tr069_configurator import expand_targets, process_target
+from ont_tr069_configurator import APP_VERSION, expand_targets, process_target
 from playwright.async_api import async_playwright
 
 
@@ -167,10 +167,16 @@ def worksheet(name: str, rows: list[list[Any]]) -> str:
 
 
 def job_to_xls(job: dict[str, Any]) -> bytes:
-    success_rows = [["IP", "Status", "Erro"]]
-    error_rows = [["IP", "Status", "Erro"]]
+    success_rows = [["IP", "Modelo", "Perfil", "Status", "Erro"]]
+    error_rows = [["IP", "Modelo", "Perfil", "Status", "Erro"]]
     for result in job.get("results", []):
-        row = [result.get("target", ""), result.get("status", ""), result.get("error", "")]
+        row = [
+            result.get("target", ""),
+            result.get("model", ""),
+            result.get("profile", ""),
+            result.get("status", ""),
+            result.get("error", ""),
+        ]
         if result.get("status") == "SUCESSO":
             success_rows.append(row)
         else:
@@ -198,8 +204,8 @@ def job_to_xls(job: dict[str, Any]) -> bytes:
 
 def history_to_xls(history: list[dict[str, Any]]) -> bytes:
     summary_rows = [["Data", "Status", "Total", "Sucesso", "Erro", "ID"]]
-    success_rows = [["Data", "IP", "Status", "Erro", "Lote"]]
-    error_rows = [["Data", "IP", "Status", "Erro", "Lote"]]
+    success_rows = [["Data", "IP", "Modelo", "Perfil", "Status", "Erro", "Lote"]]
+    error_rows = [["Data", "IP", "Modelo", "Perfil", "Status", "Erro", "Lote"]]
 
     for job in history:
         date = job.get("finished_at") or job.get("created_at", "")
@@ -214,7 +220,15 @@ def history_to_xls(history: list[dict[str, Any]]) -> bytes:
             ]
         )
         for result in job.get("results", []):
-            row = [date, result.get("target", ""), result.get("status", ""), result.get("error", ""), job.get("id", "")]
+            row = [
+                date,
+                result.get("target", ""),
+                result.get("model", ""),
+                result.get("profile", ""),
+                result.get("status", ""),
+                result.get("error", ""),
+                job.get("id", ""),
+            ]
             if result.get("status") == "SUCESSO":
                 success_rows.append(row)
             else:
@@ -320,7 +334,7 @@ def run_job_thread(job_id: str, config: dict[str, Any], dry_run: bool) -> None:
 
 
 def html_page() -> bytes:
-    return INDEX_HTML.encode("utf-8")
+    return INDEX_HTML.replace("${APP_VERSION}", APP_VERSION).encode("utf-8")
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -498,7 +512,7 @@ INDEX_HTML = r"""<!doctype html>
 <body>
   <header>
     <h1>Painel TR-069 ONT</h1>
-    <div>Cadastro em lote, status por IP e gráfico de resultado.</div>
+    <div>Cadastro em lote, status por IP, modelo detectado e gráfico de resultado. Versão ${APP_VERSION}</div>
   </header>
   <main>
     <section>
@@ -539,7 +553,7 @@ INDEX_HTML = r"""<!doctype html>
       <canvas id="chart" width="320" height="220"></canvas>
       <div class="muted" id="progress">Nenhum lote em execução.</div>
       <table>
-        <thead><tr><th>ONT</th><th>Status</th><th>Erro</th></tr></thead>
+        <thead><tr><th>ONT</th><th>Modelo</th><th>Status</th><th>Erro</th></tr></thead>
         <tbody id="results"></tbody>
       </table>
     </section>
@@ -590,7 +604,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderJob(job) {
       $("progress").textContent = `${job.status} | ${job.completed || 0}/${job.total || 0}`;
-      $("results").innerHTML = (job.results || []).map(r => `<tr><td>${r.target}</td><td class="${r.status === "SUCESSO" ? "ok" : "err"}">${r.status}</td><td>${r.error || ""}</td></tr>`).join("");
+      $("results").innerHTML = (job.results || []).map(r => `<tr><td>${r.target}</td><td>${r.model || ""}</td><td class="${r.status === "SUCESSO" ? "ok" : "err"}">${r.status}</td><td>${r.error || ""}</td></tr>`).join("");
       drawChart(job.success_count || 0, job.error_count || 0);
     }
 

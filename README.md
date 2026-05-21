@@ -1,5 +1,7 @@
 # Configurador TR-069 para ONT Huawei
 
+Versao atual: `1.2.0`
+
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
 > Use somente em ONTs suas ou em equipamentos onde voce tem autorizacao administrativa.
@@ -9,11 +11,19 @@ Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a te
 - Abre a interface da ONT pela URL ou IP informado.
 - Se aparecer o aviso de certificado do Chrome, clica em `Avancadas` e `Prosseguir`.
 - Faz login com usuario e senha da ONT.
-- Vai ate `Advanced > System Management > TR-069`.
+- Detecta o modelo da ONT e escolhe o perfil correto.
+- Vai ate a tela TR-069 conforme o perfil do modelo detectado.
 - Habilita ACS Management e Periodic Informing.
 - Preenche ACS URL, usuario, senha, Connection Request User/Password e DSCP.
 - Clica em `Apply`.
 - Desloga da ONT apos aplicar a configuracao.
+
+## Modelos suportados
+
+- `HG8245W5-6T`: fluxo ja validado na interface nova.
+- `HG8245Q2`: fluxo da interface antiga em `System Tools > TR-069`.
+
+Se um modelo novo aparecer como `UNKNOWN` no painel, envie print da tela TR-069 e o sistema pode ganhar um novo perfil.
 
 ## Instalar
 
@@ -184,3 +194,31 @@ O instalador faz:
 - cria e inicia o servico `ont-tr069-web.service`.
 
 Mais detalhes em `docs/INSTALL_SERVER.md`.
+
+## Versoes e rollback
+
+Antes de publicar a versao 1.2, crie uma tag da versao atual estavel:
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+Depois de publicar esta versao:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Para instalar uma versao especifica no servidor:
+
+```bash
+sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.2.0 --port 8080
+```
+
+Para voltar para a 1.1:
+
+```bash
+sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.1.0 --port 8080
+```
