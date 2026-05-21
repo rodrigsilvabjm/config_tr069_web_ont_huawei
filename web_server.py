@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -147,6 +148,102 @@ def history_to_xml(history: list[dict[str, Any]]) -> bytes:
     return b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="utf-8")
 
 
+def excel_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return f"<Cell><Data ss:Type=\"String\">{escape(text)}</Data></Cell>"
+
+
+def excel_row(values: list[Any]) -> str:
+    return "<Row>" + "".join(excel_cell(value) for value in values) + "</Row>"
+
+
+def worksheet(name: str, rows: list[list[Any]]) -> str:
+    body = "\n".join(excel_row(row) for row in rows)
+    return (
+        f"<Worksheet ss:Name=\"{escape(name)}\">"
+        f"<Table>{body}</Table>"
+        "</Worksheet>"
+    )
+
+
+def job_to_xls(job: dict[str, Any]) -> bytes:
+    success_rows = [["IP", "Status", "Erro"]]
+    error_rows = [["IP", "Status", "Erro"]]
+    for result in job.get("results", []):
+        row = [result.get("target", ""), result.get("status", ""), result.get("error", "")]
+        if result.get("status") == "SUCESSO":
+            success_rows.append(row)
+        else:
+            error_rows.append(row)
+
+    summary_rows = [
+        ["Campo", "Valor"],
+        ["ID", job.get("id", "")],
+        ["Status", job.get("status", "")],
+        ["Criado em", job.get("created_at", "")],
+        ["Iniciado em", job.get("started_at", "")],
+        ["Finalizado em", job.get("finished_at", "")],
+        ["Total", job.get("total", 0)],
+        ["Sucesso", job.get("success_count", 0)],
+        ["Erro", job.get("error_count", 0)],
+    ]
+    return excel_workbook(
+        [
+            worksheet("Resumo", summary_rows),
+            worksheet("Sucessos", success_rows),
+            worksheet("Erros", error_rows),
+        ]
+    )
+
+
+def history_to_xls(history: list[dict[str, Any]]) -> bytes:
+    summary_rows = [["Data", "Status", "Total", "Sucesso", "Erro", "ID"]]
+    success_rows = [["Data", "IP", "Status", "Erro", "Lote"]]
+    error_rows = [["Data", "IP", "Status", "Erro", "Lote"]]
+
+    for job in history:
+        date = job.get("finished_at") or job.get("created_at", "")
+        summary_rows.append(
+            [
+                date,
+                job.get("status", ""),
+                job.get("total", 0),
+                job.get("success_count", 0),
+                job.get("error_count", 0),
+                job.get("id", ""),
+            ]
+        )
+        for result in job.get("results", []):
+            row = [date, result.get("target", ""), result.get("status", ""), result.get("error", ""), job.get("id", "")]
+            if result.get("status") == "SUCESSO":
+                success_rows.append(row)
+            else:
+                error_rows.append(row)
+
+    return excel_workbook(
+        [
+            worksheet("Resumo", summary_rows),
+            worksheet("Sucessos", success_rows),
+            worksheet("Erros", error_rows),
+        ]
+    )
+
+
+def excel_workbook(worksheets: list[str]) -> bytes:
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<?mso-application progid="Excel.Sheet"?>\n'
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:o="urn:schemas-microsoft-com:office:office" '
+        'xmlns:x="urn:schemas-microsoft-com:office:excel" '
+        'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:html="http://www.w3.org/TR/REC-html40">'
+        + "".join(worksheets)
+        + "</Workbook>"
+    )
+    return xml.encode("utf-8")
+
+
 def parse_targets(text: str) -> list[str]:
     return [line.strip() for line in text.replace(",", "\n").splitlines() if line.strip()]
 
@@ -251,6 +348,14 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_xls(self, data: bytes, filename: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/vnd.ms-excel; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length).decode("utf-8")
@@ -296,6 +401,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_xml(history_to_xml(load_json_file(HISTORY_FILE, [])), "historico_onts.xml")
             return
 
+        if parsed.path == "/api/history/export.xls":
+            self.send_xls(history_to_xls(load_json_file(HISTORY_FILE, [])), "historico_onts.xls")
+            return
+
         if parsed.path.startswith("/api/history/") and parsed.path.endswith("/export.xml"):
             job_id = parsed.path.split("/")[3]
             history = load_json_file(HISTORY_FILE, [])
@@ -304,6 +413,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Historico nao encontrado."}, 404)
                 return
             self.send_xml(job_to_xml(job), f"lote_{job_id}.xml")
+            return
+
+        if parsed.path.startswith("/api/history/") and parsed.path.endswith("/export.xls"):
+            job_id = parsed.path.split("/")[3]
+            history = load_json_file(HISTORY_FILE, [])
+            job = next((item for item in history if item.get("id") == job_id), None)
+            if not job:
+                self.send_json({"error": "Historico nao encontrado."}, 404)
+                return
+            self.send_xls(job_to_xls(job), f"lote_{job_id}.xls")
             return
 
         self.send_json({"error": "Rota nao encontrada."}, 404)
@@ -411,7 +530,7 @@ INDEX_HTML = r"""<!doctype html>
       <label><input id="dry_run" type="checkbox" style="width:auto"> Testar sem clicar em Apply</label>
       <button onclick="startJob()">Executar lote</button>
       <button class="secondary" onclick="loadHistory()">Atualizar histórico</button>
-      <button class="secondary" onclick="exportHistoryXml()">Exportar histórico XML</button>
+      <button class="secondary" onclick="exportHistoryXls()">Exportar histórico XLS</button>
       <p class="muted" id="message"></p>
     </section>
 
@@ -428,7 +547,7 @@ INDEX_HTML = r"""<!doctype html>
     <section style="grid-column: 1 / -1;">
       <h2>Histórico</h2>
       <table>
-        <thead><tr><th>Data</th><th>Status</th><th>Total</th><th>Sucesso</th><th>Erro</th><th>XML</th></tr></thead>
+        <thead><tr><th>Data</th><th>Status</th><th>Total</th><th>Sucesso</th><th>Erro</th><th>XLS</th></tr></thead>
         <tbody id="history"></tbody>
       </table>
     </section>
@@ -478,15 +597,15 @@ INDEX_HTML = r"""<!doctype html>
     async function loadHistory() {
       const res = await fetch("/api/history", { headers: headers() });
       const items = await res.json();
-      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td><td><button class="secondary" onclick="exportJobXml('${j.id}')">XML</button></td></tr>`).join("");
+      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td><td><button class="secondary" onclick="exportJobXls('${j.id}')">XLS</button></td></tr>`).join("");
     }
 
-    function exportJobXml(id) {
-      window.location.href = `/api/history/${id}/export.xml`;
+    function exportJobXls(id) {
+      window.location.href = `/api/history/${id}/export.xls`;
     }
 
-    function exportHistoryXml() {
-      window.location.href = "/api/history/export.xml";
+    function exportHistoryXls() {
+      window.location.href = "/api/history/export.xls";
     }
 
     function drawChart(success, error) {

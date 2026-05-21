@@ -112,7 +112,7 @@ Se parar na tela de login, o script salva arquivos de diagnostico em `debug/`, c
 ## Painel web em Debian/Ubuntu Server
 
 O arquivo `web_server.py` sobe um painel web para cadastrar IPs/ranges, executar os lotes e ver o grafico de sucesso/erro.
-No historico, cada lote pode ser exportado em XML com as ONTs separadas em `sucessos` e `erros`. Tambem existe um botao para exportar o historico completo em XML.
+No historico, cada lote pode ser exportado em XLS com abas `Resumo`, `Sucessos` e `Erros`. Tambem existe um botao para exportar o historico completo em XLS.
 
 Instalacao basica:
 
