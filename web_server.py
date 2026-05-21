@@ -185,10 +185,7 @@ class WebHandler(BaseHTTPRequestHandler):
         print(f"{self.address_string()} - {format % args}")
 
     def check_auth(self) -> bool:
-        token = os.environ.get("ONT_WEB_TOKEN")
-        if not token:
-            return True
-        return self.headers.get("X-Auth-Token") == token
+        return True
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -317,8 +314,6 @@ INDEX_HTML = r"""<!doctype html>
   <main>
     <section>
       <h2>Novo lote</h2>
-      <label>Token web, se configurado</label>
-      <input id="token" type="password" placeholder="ONT_WEB_TOKEN">
       <div class="grid">
         <div><label>Protocolo</label><input id="protocol" value="https"></div>
         <div><label>Porta</label><input id="port" value="80"></div>
@@ -372,9 +367,7 @@ INDEX_HTML = r"""<!doctype html>
     const $ = id => document.getElementById(id);
 
     function headers() {
-      const h = { "Content-Type": "application/json" };
-      if ($("token").value) h["X-Auth-Token"] = $("token").value;
-      return h;
+      return { "Content-Type": "application/json" };
     }
 
     function payload() {
@@ -451,7 +444,7 @@ def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), WebHandler)
     print(f"Painel TR-069 ouvindo em http://{args.host}:{args.port}")
-    print("Defina ONT_WEB_TOKEN no ambiente para exigir token nas chamadas da API.")
+    print("Use firewall, VPN ou proxy reverso com HTTPS para proteger o painel.")
     server.serve_forever()
 
 

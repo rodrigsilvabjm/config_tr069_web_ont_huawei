@@ -8,7 +8,7 @@ REPO_URL=""
 WEB_TOKEN=""
 
 usage() {
-  echo "Uso: sudo bash install.sh --repo https://github.com/USUARIO/REPO.git [--port 8080] [--token TOKEN]"
+  echo "Uso: sudo bash install.sh --repo https://github.com/USUARIO/REPO.git [--port 8080]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -27,10 +27,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       APP_PORT="${2:-}"
-      shift 2
-      ;;
-    --token)
-      WEB_TOKEN="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -54,10 +50,6 @@ if [[ -z "$REPO_URL" ]]; then
   echo "Informe --repo com a URL do repositorio GitHub."
   usage
   exit 1
-fi
-
-if [[ -z "$WEB_TOKEN" ]]; then
-  WEB_TOKEN="$(openssl rand -hex 24 2>/dev/null || date +%s%N)"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -102,7 +94,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$APP_DIR
-Environment=ONT_WEB_TOKEN=$WEB_TOKEN
 Environment=PLAYWRIGHT_BROWSERS_PATH=$APP_DIR/ms-playwright
 ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/web_server.py --host 0.0.0.0 --port $APP_PORT
 Restart=always
@@ -119,7 +110,6 @@ systemctl enable --now ont-tr069-web.service
 echo
 echo "Instalacao concluida."
 echo "Painel: http://IP_DO_SERVIDOR:$APP_PORT"
-echo "Token do painel: $WEB_TOKEN"
 echo
 echo "Comandos uteis:"
 echo "  systemctl status ont-tr069-web.service"

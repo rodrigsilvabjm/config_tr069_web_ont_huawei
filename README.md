@@ -136,7 +136,6 @@ python -m playwright install --with-deps chromium
 Subir o painel:
 
 ```bash
-export ONT_WEB_TOKEN="troque-este-token"
 python web_server.py --host 0.0.0.0 --port 8080
 ```
 
@@ -146,7 +145,7 @@ Acesse no navegador:
 http://IP_DO_SERVIDOR:8080
 ```
 
-Se `ONT_WEB_TOKEN` estiver definido, informe o mesmo token no campo do painel. Recomendado usar firewall/VPN ou proxy reverso com HTTPS, porque o painel manipula senhas de ONT e ACS.
+Recomendado usar firewall/VPN ou proxy reverso com HTTPS, porque o painel manipula senhas de ONT e ACS.
 
 Servico systemd opcional:
 
@@ -157,7 +156,6 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/ont-tr069
-Environment=ONT_WEB_TOKEN=troque-este-token
 ExecStart=/opt/ont-tr069/.venv/bin/python /opt/ont-tr069/web_server.py --host 0.0.0.0 --port 8080
 Restart=always
 User=SEU_USUARIO
@@ -171,7 +169,7 @@ WantedBy=multi-user.target
 Depois de publicar este projeto no GitHub, o servidor pode instalar tudo com:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USUARIO/REPO/main/install.sh | sudo bash -s -- --repo https://github.com/USUARIO/REPO.git --port 8080 --token "troque-este-token"
+curl -fsSL https://raw.githubusercontent.com/USUARIO/REPO/main/install.sh | sudo bash -s -- --repo https://github.com/USUARIO/REPO.git --port 8080
 ```
 
 O instalador faz:

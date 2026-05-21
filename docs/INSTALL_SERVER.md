@@ -3,7 +3,7 @@
 Depois de subir este projeto para o GitHub, instale em um servidor com um comando:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USUARIO/REPO/main/install.sh | sudo bash -s -- --repo https://github.com/USUARIO/REPO.git --port 8080 --token "troque-este-token"
+curl -fsSL https://raw.githubusercontent.com/USUARIO/REPO/main/install.sh | sudo bash -s -- --repo https://github.com/USUARIO/REPO.git --port 8080
 ```
 
 Depois acesse:
@@ -12,7 +12,7 @@ Depois acesse:
 http://IP_DO_SERVIDOR:8080
 ```
 
-Use o token informado no comando no campo `Token web`.
+O painel nao usa token por padrao. Proteja o acesso com firewall, VPN ou proxy reverso com HTTPS.
 
 ## Atualizar
 
@@ -43,4 +43,3 @@ sudo journalctl -u ont-tr069-web.service -f
 ## Seguranca
 
 O painel manipula senhas de ONT e ACS. Use firewall, VPN ou proxy reverso com HTTPS. Nao exponha a porta 8080 diretamente para a internet.
-
