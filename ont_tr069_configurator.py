@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 
 
 class OntAutomationError(RuntimeError):
@@ -319,70 +319,31 @@ async def fill_by_label(root: Page | Frame, label_text: str, value: Any, verify:
 
 
 async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
-    inputs = root.locator("input:visible:not([type='button']):not([type='submit'])")
-    count = await inputs.count()
-    if count < 10:
-        inputs = root.locator(
-            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[not(@type='button') and not(@type='submit')][position() <= 10]"
-        )
-        count = await inputs.count()
-    if count < 10:
-        raise OntAutomationError(f"HG8245Q2: esperava pelo menos 10 campos ACS visiveis, encontrei {count}.")
-
-    values = [
-        True,
-        True,
-        tr069.get("informing_interval", 43200),
-        tr069.get("informing_time", "0001-01-01T00:00:00Z"),
-        tr069["acs_url"],
-        tr069.get("acs_username", ""),
-        tr069.get("acs_password", ""),
-        tr069.get("connection_request_username", ""),
-        tr069.get("connection_request_password", ""),
-        tr069.get("dscp", 0),
-    ]
-    names = [
-        "Enable ACS Management",
-        "Enable Periodic Informing",
-        "Informing Interval",
-        "Informing Time",
-        "ACS URL",
-        "ACS User Name",
-        "ACS Password",
-        "Connection Request User Name",
-        "Connection Request Password",
-        "DSCP",
-    ]
-
-    for index, value in enumerate(values):
-        locator = inputs.nth(index)
-        await set_input_value(locator, value)
-        input_type = (await locator.get_attribute("type") or "").lower()
-        if input_type != "password":
-            actual = await read_input_value(locator)
-            expected = "true" if value is True else "false" if value is False else str(value)
-            if actual != expected:
-                raise OntAutomationError(f"HG8245Q2: campo {names[index]} nao foi preenchido. Esperado {expected}, ficou {actual}.")
+    await fill_by_label(root, "Enable ACS Management:", True)
+    await fill_by_label(root, "Enable Periodic Informing:", True)
+    await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
+    await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+    await fill_by_label(root, "ACS URL:", tr069["acs_url"])
+    await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
+    await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""), verify=False)
+    await fill_by_label(root, "Connection Request User Name:", tr069.get("connection_request_username", ""))
+    await fill_by_label(root, "Connection Request Password:", tr069.get("connection_request_password", ""), verify=False)
+    await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
 
 
 async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
-    inputs = root.locator("input:visible:not([type='button']):not([type='submit'])")
-    count = await inputs.count()
-    if count < 10:
-        raise OntAutomationError(f"HG8245Q2: nao consegui validar ACS apos Apply. Campos visiveis: {count}.")
-
     expected_values = {
-        "Informing Interval": (2, str(tr069.get("informing_interval", 43200))),
-        "Informing Time": (3, str(tr069.get("informing_time", "0001-01-01T00:00:00Z"))),
-        "ACS URL": (4, str(tr069["acs_url"])),
-        "ACS User Name": (5, str(tr069.get("acs_username", ""))),
-        "Connection Request User Name": (7, str(tr069.get("connection_request_username", ""))),
-        "DSCP": (9, str(tr069.get("dscp", 0))),
+        "Informing Interval:": str(tr069.get("informing_interval", 43200)),
+        "Informing Time:": str(tr069.get("informing_time", "0001-01-01T00:00:00Z")),
+        "ACS URL:": str(tr069["acs_url"]),
+        "ACS User Name:": str(tr069.get("acs_username", "")),
+        "Connection Request User Name:": str(tr069.get("connection_request_username", "")),
+        "DSCP:": str(tr069.get("dscp", 0)),
     }
 
     mismatches: list[str] = []
-    for name, (index, expected) in expected_values.items():
-        actual = await read_input_value(inputs.nth(index))
+    for name, expected in expected_values.items():
+        actual = await read_input_value(await input_after_label(root, name))
         if actual != expected:
             mismatches.append(f"{name}: esperado {expected}, ficou {actual}")
 
@@ -392,18 +353,20 @@ async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None
 
 async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> None:
     if profile.get("name") == "HG8245Q2":
-        buttons = root.locator("input[value='Apply']:visible, button:has-text('Apply')")
-        count = await buttons.count()
-        if count >= 1:
+        apply_after_dscp = root.locator(
+            "xpath=//*[contains(normalize-space(.), 'DSCP:')]/following::input[@value='Apply' or @type='submit'][1]"
+        ).first
+        try:
             page = get_root_page(root)
+            await apply_after_dscp.click(timeout=4000)
             try:
-                await buttons.nth(0).click(timeout=4000)
                 await page.wait_for_load_state("networkidle", timeout=8000)
             except PlaywrightTimeoutError:
                 await page.wait_for_timeout(3000)
             await page.wait_for_timeout(7000)
             return
-        raise OntAutomationError("HG8245Q2: nao encontrei nenhum botao Apply visivel.")
+        except Exception as exc:
+            raise OntAutomationError(f"HG8245Q2: nao consegui clicar no Apply apos DSCP: {exc}") from exc
     else:
         apply_selectors = [
             "#ACSbtnApply",
