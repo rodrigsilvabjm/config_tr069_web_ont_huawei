@@ -418,6 +418,37 @@ async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_ru
     )
 
 
+async def logout_ont(page: Page) -> None:
+    print("Deslogando da ONT...")
+    logout_selectors = [
+        "text=Logout",
+        "text=Log out",
+        "text=Sair",
+        "#logout",
+        "a:has-text('Logout')",
+        "a:has-text('Sair')",
+        "button:has-text('Logout')",
+        "button:has-text('Sair')",
+    ]
+    for selector in logout_selectors:
+        try:
+            locator = page.locator(selector).first
+            await locator.click(timeout=1500)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except PlaywrightTimeoutError:
+                pass
+            return
+        except Exception:
+            continue
+
+    try:
+        base_url = page.url.split("/index.asp")[0].split("/html/")[0].rstrip("/")
+        await page.goto(f"{base_url}/logout.cgi?RequestFile=html/logout.html", wait_until="domcontentloaded", timeout=5000)
+    except Exception as exc:
+        print(f"Aviso: nao consegui confirmar logout da ONT: {exc}")
+
+
 async def process_target(
     context: Any,
     config: dict[str, Any],
@@ -447,6 +478,8 @@ async def process_target(
             dry_run=dry_run,
             save_success_debug=bool(browser_cfg.get("save_success_debug", False)),
         )
+        if not dry_run:
+            await logout_ont(page)
 
         if headed:
             await page.wait_for_timeout(int(browser_cfg.get("headed_finish_wait_ms", 500)))

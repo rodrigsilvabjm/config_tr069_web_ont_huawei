@@ -13,6 +13,7 @@ Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a te
 - Habilita ACS Management e Periodic Informing.
 - Preenche ACS URL, usuario, senha, Connection Request User/Password e DSCP.
 - Clica em `Apply`.
+- Desloga da ONT apos aplicar a configuracao.
 
 ## Instalar
 
