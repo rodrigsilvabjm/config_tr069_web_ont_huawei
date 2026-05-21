@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.2.2`
+Versao atual: `1.2.3`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
@@ -207,14 +207,14 @@ git push origin v1.1.0
 Depois de publicar esta versao:
 
 ```bash
-git tag v1.2.2
-git push origin v1.2.2
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 Para instalar uma versao especifica no servidor:
 
 ```bash
-sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.2.2 --port 8080
+sudo bash install.sh --repo https://github.com/USUARIO/REPO.git --ref v1.2.3 --port 8080
 ```
 
 Para voltar para a 1.1:

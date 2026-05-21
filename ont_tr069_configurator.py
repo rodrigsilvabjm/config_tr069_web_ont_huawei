@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 
 class OntAutomationError(RuntimeError):
@@ -367,10 +367,17 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
 
 async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> None:
     if profile.get("name") == "HG8245Q2":
-        apply_selectors = [
-            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[@value='Apply' and not(ancestor::*[contains(normalize-space(.), 'Certificate')])][1]",
-            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::button[contains(normalize-space(.), 'Apply')][1]",
-        ]
+        buttons = root.locator("input[value='Apply']:visible, button:has-text('Apply')")
+        count = await buttons.count()
+        if count >= 1:
+            page = get_root_page(root)
+            try:
+                await buttons.nth(0).click(timeout=4000)
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except PlaywrightTimeoutError:
+                await page.wait_for_timeout(3000)
+            return
+        raise OntAutomationError("HG8245Q2: nao encontrei nenhum botao Apply visivel.")
     else:
         apply_selectors = [
             "#ACSbtnApply",
