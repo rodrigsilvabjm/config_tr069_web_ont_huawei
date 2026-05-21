@@ -70,6 +70,7 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 
 if [[ -d "$APP_DIR/.git" ]]; then
+  git config --global --add safe.directory "$APP_DIR" || true
   git -C "$APP_DIR" pull --ff-only
 else
   rm -rf "$APP_DIR"
