@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 
 class OntAutomationError(RuntimeError):
@@ -269,12 +269,32 @@ async def set_input_value(locator: Locator, value: Any) -> None:
     input_type = (await locator.get_attribute("type") or "").lower()
     if input_type in {"checkbox", "radio"}:
         if bool(value):
-            await locator.check(force=True)
+            if not await locator.is_checked():
+                await locator.click(force=True)
         else:
-            await locator.uncheck(force=True)
+            if await locator.is_checked():
+                await locator.click(force=True)
+        await locator.evaluate(
+            """el => {
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                if (typeof el.onclick === 'function') el.onclick();
+            }"""
+        )
         return
 
     await locator.fill(value)
+    await locator.evaluate(
+        """(el, value) => {
+            el.value = value;
+            el.setAttribute('value', value);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof el.onchange === 'function') el.onchange();
+            if (typeof el.onblur === 'function') el.onblur();
+        }""",
+        value,
+    )
 
 
 async def read_input_value(locator: Locator) -> str:
@@ -299,12 +319,15 @@ async def fill_by_label(root: Page | Frame, label_text: str, value: Any, verify:
 
 
 async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
-    inputs = root.locator(
-        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[not(@type='button')][position() <= 10]"
-    )
+    inputs = root.locator("input:visible:not([type='button']):not([type='submit'])")
     count = await inputs.count()
     if count < 10:
-        raise OntAutomationError(f"HG8245Q2: esperava pelo menos 10 campos ACS, encontrei {count}.")
+        inputs = root.locator(
+            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[not(@type='button') and not(@type='submit')][position() <= 10]"
+        )
+        count = await inputs.count()
+    if count < 10:
+        raise OntAutomationError(f"HG8245Q2: esperava pelo menos 10 campos ACS visiveis, encontrei {count}.")
 
     values = [
         True,
@@ -340,6 +363,53 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
             expected = "true" if value is True else "false" if value is False else str(value)
             if actual != expected:
                 raise OntAutomationError(f"HG8245Q2: campo {names[index]} nao foi preenchido. Esperado {expected}, ficou {actual}.")
+
+
+async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> None:
+    if profile.get("name") == "HG8245Q2":
+        apply_selectors = [
+            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[@value='Apply' and not(ancestor::*[contains(normalize-space(.), 'Certificate')])][1]",
+            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::button[contains(normalize-space(.), 'Apply')][1]",
+        ]
+    else:
+        apply_selectors = [
+            "#ACSbtnApply",
+            "input[id='ACSbtnApply']",
+            "input[onclick*='SubmitAcsConfig']",
+            "input[value='Apply'][onclick*='Acs']",
+            "input[value='Apply'][onclick*='ACS']",
+            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[@value='Apply'][1]",
+            "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::button[contains(normalize-space(.), 'Apply')][1]",
+        ]
+
+    for selector in apply_selectors:
+        button = root.locator(selector)
+        try:
+            if await button.count() == 1:
+                page = get_root_page(root)
+                try:
+                    await button.click(timeout=4000)
+                    await page.wait_for_load_state("networkidle", timeout=8000)
+                except PlaywrightTimeoutError:
+                    await page.wait_for_timeout(3000)
+                return
+        except Exception:
+            continue
+
+    buttons = root.locator("input[value='Apply'], button:has-text('Apply')")
+    count = await buttons.count()
+    if count == 1:
+        page = get_root_page(root)
+        await buttons.click(timeout=4000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except PlaywrightTimeoutError:
+            await page.wait_for_timeout(3000)
+        return
+
+    raise OntAutomationError(
+        f"Encontrei {count} botoes Apply e nao consegui identificar o Apply correto do perfil {profile.get('name')}."
+    )
 
 
 async def try_login(page: Page, username: str, password: str) -> None:
@@ -511,34 +581,7 @@ async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_ru
         return
 
     print("Campos TR-069 preenchidos. Clicando no Apply da configuracao ACS...")
-    apply_selectors = [
-        "#ACSbtnApply",
-        "input[id='ACSbtnApply']",
-        "input[onclick*='SubmitAcsConfig']",
-        "input[value='Apply'][onclick*='Acs']",
-        "input[value='Apply'][onclick*='ACS']",
-        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::input[@value='Apply'][1]",
-        "xpath=//*[contains(normalize-space(.), 'ACS Parameter Settings')]/following::button[contains(normalize-space(.), 'Apply')][1]",
-    ]
-    for selector in apply_selectors:
-        button = root.locator(selector)
-        try:
-            if await button.count() == 1:
-                await button.click(timeout=4000)
-                return
-        except Exception:
-            continue
-
-    buttons = root.locator("input[value='Apply'], button:has-text('Apply')")
-    count = await buttons.count()
-    if count == 1:
-        await buttons.click(timeout=4000)
-        return
-
-    raise OntAutomationError(
-        f"Encontrei {count} botoes Apply e nao consegui identificar o ACS. "
-        "O botao esperado e #ACSbtnApply."
-    )
+    await click_apply_button(root, profile)
 
 
 async def logout_ont(page: Page) -> None:
@@ -589,6 +632,7 @@ async def process_target(
     try:
         print(f"\n[{label}] Iniciando configuracao...")
         page = await context.new_page()
+        page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
         page.set_default_timeout(timeout_ms)
 
         await page.goto(ont_url, wait_until="domcontentloaded")
@@ -606,6 +650,7 @@ async def process_target(
             profile=profile,
         )
         if not dry_run:
+            await page.wait_for_timeout(int(browser_cfg.get("post_apply_wait_ms", 3000)))
             await logout_ont(page)
 
         if headed:
