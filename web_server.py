@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ont_tr069_configurator import expand_targets, process_target
 from playwright.async_api import async_playwright
@@ -97,6 +98,53 @@ def append_history(job: dict[str, Any]) -> None:
     history = load_json_file(HISTORY_FILE, [])
     history.insert(0, job)
     write_json_file(HISTORY_FILE, history[:200])
+
+
+def job_to_xml(job: dict[str, Any]) -> bytes:
+    root = Element("lote")
+    root.set("id", str(job.get("id", "")))
+    root.set("status", str(job.get("status", "")))
+
+    metadata = SubElement(root, "metadata")
+    for key in ("created_at", "started_at", "finished_at", "total", "success_count", "error_count", "dry_run"):
+        child = SubElement(metadata, key)
+        child.text = "" if job.get(key) is None else str(job.get(key, ""))
+
+    successes = SubElement(root, "sucessos")
+    errors = SubElement(root, "erros")
+
+    for result in job.get("results", []):
+        parent = successes if result.get("status") == "SUCESSO" else errors
+        ont = SubElement(parent, "ont")
+        SubElement(ont, "ip").text = str(result.get("target", ""))
+        SubElement(ont, "status").text = str(result.get("status", ""))
+        if result.get("error"):
+            SubElement(ont, "erro").text = str(result.get("error", ""))
+
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="utf-8")
+
+
+def history_to_xml(history: list[dict[str, Any]]) -> bytes:
+    root = Element("historico")
+    for job in history:
+        lote = SubElement(root, "lote")
+        lote.set("id", str(job.get("id", "")))
+        lote.set("status", str(job.get("status", "")))
+        for key in ("created_at", "finished_at", "total", "success_count", "error_count"):
+            child = SubElement(lote, key)
+            child.text = "" if job.get(key) is None else str(job.get(key, ""))
+
+        successes = SubElement(lote, "sucessos")
+        errors = SubElement(lote, "erros")
+        for result in job.get("results", []):
+            parent = successes if result.get("status") == "SUCESSO" else errors
+            ont = SubElement(parent, "ont")
+            SubElement(ont, "ip").text = str(result.get("target", ""))
+            SubElement(ont, "status").text = str(result.get("status", ""))
+            if result.get("error"):
+                SubElement(ont, "erro").text = str(result.get("error", ""))
+
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="utf-8")
 
 
 def parse_targets(text: str) -> list[str]:
@@ -195,6 +243,14 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_xml(self, data: bytes, filename: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/xml; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length).decode("utf-8")
@@ -234,6 +290,20 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/history":
             self.send_json(load_json_file(HISTORY_FILE, []))
+            return
+
+        if parsed.path == "/api/history/export.xml":
+            self.send_xml(history_to_xml(load_json_file(HISTORY_FILE, [])), "historico_onts.xml")
+            return
+
+        if parsed.path.startswith("/api/history/") and parsed.path.endswith("/export.xml"):
+            job_id = parsed.path.split("/")[3]
+            history = load_json_file(HISTORY_FILE, [])
+            job = next((item for item in history if item.get("id") == job_id), None)
+            if not job:
+                self.send_json({"error": "Historico nao encontrado."}, 404)
+                return
+            self.send_xml(job_to_xml(job), f"lote_{job_id}.xml")
             return
 
         self.send_json({"error": "Rota nao encontrada."}, 404)
@@ -341,6 +411,7 @@ INDEX_HTML = r"""<!doctype html>
       <label><input id="dry_run" type="checkbox" style="width:auto"> Testar sem clicar em Apply</label>
       <button onclick="startJob()">Executar lote</button>
       <button class="secondary" onclick="loadHistory()">Atualizar histórico</button>
+      <button class="secondary" onclick="exportHistoryXml()">Exportar histórico XML</button>
       <p class="muted" id="message"></p>
     </section>
 
@@ -357,7 +428,7 @@ INDEX_HTML = r"""<!doctype html>
     <section style="grid-column: 1 / -1;">
       <h2>Histórico</h2>
       <table>
-        <thead><tr><th>Data</th><th>Status</th><th>Total</th><th>Sucesso</th><th>Erro</th></tr></thead>
+        <thead><tr><th>Data</th><th>Status</th><th>Total</th><th>Sucesso</th><th>Erro</th><th>XML</th></tr></thead>
         <tbody id="history"></tbody>
       </table>
     </section>
@@ -407,7 +478,15 @@ INDEX_HTML = r"""<!doctype html>
     async function loadHistory() {
       const res = await fetch("/api/history", { headers: headers() });
       const items = await res.json();
-      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td></tr>`).join("");
+      $("history").innerHTML = items.map(j => `<tr><td>${j.finished_at || j.created_at}</td><td>${j.status}</td><td>${j.total}</td><td class="ok">${j.success_count || 0}</td><td class="err">${j.error_count || 0}</td><td><button class="secondary" onclick="exportJobXml('${j.id}')">XML</button></td></tr>`).join("");
+    }
+
+    function exportJobXml(id) {
+      window.location.href = `/api/history/${id}/export.xml`;
+    }
+
+    function exportHistoryXml() {
+      window.location.href = "/api/history/export.xml";
     }
 
     function drawChart(success, error) {
