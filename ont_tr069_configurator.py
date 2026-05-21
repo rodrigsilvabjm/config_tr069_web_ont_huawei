@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 
 class OntAutomationError(RuntimeError):
@@ -138,6 +138,21 @@ def alternate_protocol_url(url: str) -> str | None:
     if parsed.scheme == "http":
         return url.replace("http://", "https://", 1)
     return None
+
+
+async def goto_ont_page(page: Page, url: str, timeout: int = 15000) -> None:
+    await page.goto(url, wait_until="commit", timeout=timeout)
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except PlaywrightTimeoutError:
+        pass
+
+
+def hg8245q2_informing_time(tr069: dict[str, Any]) -> str:
+    value = str(tr069.get("informing_time") or "").strip()
+    if not value or value == "0001-01-01T00:00:00Z":
+        return "2009-12-20T12:23:34"
+    return value
 
 
 def target_label(target: str) -> str:
@@ -367,7 +382,7 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     await fill_by_label(root, "Enable ACS Management:", True)
     await fill_by_label(root, "Enable Periodic Informing:", True)
     await fill_by_label(root, "Informing Interval:", current_interval)
-    await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+    await fill_by_label(root, "Informing Time:", hg8245q2_informing_time(tr069))
     await fill_by_label(root, "ACS URL:", tr069["acs_url"])
     await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
     await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""), verify=False)
@@ -378,7 +393,7 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
 
 async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     expected_values = {
-        "Informing Time:": str(tr069.get("informing_time", "0001-01-01T00:00:00Z")),
+        "Informing Time:": hg8245q2_informing_time(tr069),
         "ACS URL:": str(tr069["acs_url"]),
         "ACS User Name:": str(tr069.get("acs_username", "")),
         "Connection Request User Name:": str(tr069.get("connection_request_username", "")),
@@ -610,13 +625,13 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: di
             tr069_path = f"/{tr069_path}"
         try:
             print(f"Abrindo TR-069 diretamente em {tr069_path}...")
-            await page.goto(f"{base_url}{tr069_path}", wait_until="domcontentloaded", timeout=8000)
+            await goto_ont_page(page, f"{base_url}{tr069_path}", timeout=8000)
             await proceed_through_privacy_warning(page)
             return await find_tr069_root(page)
         except Exception:
             print("Caminho direto nao abriu a tela TR-069. Tentando proxima opcao...")
 
-    await page.goto(f"{base_url}/index.asp", wait_until="domcontentloaded")
+    await goto_ont_page(page, f"{base_url}/index.asp", timeout=10000)
     await proceed_through_privacy_warning(page)
     for selector in ["#addconfig", "#systool", "#tr069config"]:
         try:
@@ -712,7 +727,7 @@ async def logout_ont(page: Page) -> None:
 
     try:
         base_url = page.url.split("/index.asp")[0].split("/html/")[0].rstrip("/")
-        await page.goto(f"{base_url}/logout.cgi?RequestFile=html/logout.html", wait_until="domcontentloaded", timeout=5000)
+        await goto_ont_page(page, f"{base_url}/logout.cgi?RequestFile=html/logout.html", timeout=5000)
     except Exception as exc:
         print(f"Aviso: nao consegui confirmar logout da ONT: {exc}")
 
@@ -739,13 +754,13 @@ async def process_target(
         page.set_default_timeout(timeout_ms)
 
         try:
-            await page.goto(ont_url, wait_until="domcontentloaded")
+            await goto_ont_page(page, ont_url)
         except Exception as exc:
             fallback_url = alternate_protocol_url(ont_url)
             if fallback_url and ("ERR_CONNECTION_RESET" in str(exc) or "ERR_SSL" in str(exc) or "ERR_EMPTY_RESPONSE" in str(exc)):
                 print(f"[{label}] Falha em {ont_url}. Tentando {fallback_url}...")
                 ont_url = fallback_url
-                await page.goto(ont_url, wait_until="domcontentloaded")
+                await goto_ont_page(page, ont_url)
             else:
                 raise
         await proceed_through_privacy_warning(page)
