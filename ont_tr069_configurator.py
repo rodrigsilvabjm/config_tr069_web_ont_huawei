@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 
 
 class OntAutomationError(RuntimeError):
@@ -365,6 +365,31 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
                 raise OntAutomationError(f"HG8245Q2: campo {names[index]} nao foi preenchido. Esperado {expected}, ficou {actual}.")
 
 
+async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
+    inputs = root.locator("input:visible:not([type='button']):not([type='submit'])")
+    count = await inputs.count()
+    if count < 10:
+        raise OntAutomationError(f"HG8245Q2: nao consegui validar ACS apos Apply. Campos visiveis: {count}.")
+
+    expected_values = {
+        "Informing Interval": (2, str(tr069.get("informing_interval", 43200))),
+        "Informing Time": (3, str(tr069.get("informing_time", "0001-01-01T00:00:00Z"))),
+        "ACS URL": (4, str(tr069["acs_url"])),
+        "ACS User Name": (5, str(tr069.get("acs_username", ""))),
+        "Connection Request User Name": (7, str(tr069.get("connection_request_username", ""))),
+        "DSCP": (9, str(tr069.get("dscp", 0))),
+    }
+
+    mismatches: list[str] = []
+    for name, (index, expected) in expected_values.items():
+        actual = await read_input_value(inputs.nth(index))
+        if actual != expected:
+            mismatches.append(f"{name}: esperado {expected}, ficou {actual}")
+
+    if mismatches:
+        raise OntAutomationError("HG8245Q2 nao salvou a configuracao TR-069: " + "; ".join(mismatches))
+
+
 async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> None:
     if profile.get("name") == "HG8245Q2":
         buttons = root.locator("input[value='Apply']:visible, button:has-text('Apply')")
@@ -376,6 +401,7 @@ async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> Non
                 await page.wait_for_load_state("networkidle", timeout=8000)
             except PlaywrightTimeoutError:
                 await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(7000)
             return
         raise OntAutomationError("HG8245Q2: nao encontrei nenhum botao Apply visivel.")
     else:
@@ -591,6 +617,15 @@ async def apply_tr069_settings(root: Page | Frame, tr069: dict[str, Any], dry_ru
     await click_apply_button(root, profile)
 
 
+async def verify_after_apply(page: Page, browser_cfg: dict[str, Any], profile: dict[str, Any], tr069: dict[str, Any]) -> None:
+    if profile.get("name") != "HG8245Q2":
+        return
+
+    await page.wait_for_timeout(int(browser_cfg.get("hg8245q2_save_wait_ms", 10000)))
+    verified_root = await navigate_to_tr069(page, browser_cfg, profile)
+    await verify_hg8245q2_acs(verified_root, tr069)
+
+
 async def logout_ont(page: Page) -> None:
     print("Deslogando da ONT...")
     logout_selectors = [
@@ -657,7 +692,12 @@ async def process_target(
             profile=profile,
         )
         if not dry_run:
-            await page.wait_for_timeout(int(browser_cfg.get("post_apply_wait_ms", 3000)))
+            await verify_after_apply(page, browser_cfg, profile, config["tr069"])
+            if profile.get("name") == "HG8245Q2":
+                print("HG8245Q2: configuracao confirmada. Mantendo sessao aberta por alguns segundos antes do logout.")
+                await page.wait_for_timeout(int(browser_cfg.get("hg8245q2_logout_wait_ms", 5000)))
+            else:
+                await page.wait_for_timeout(int(browser_cfg.get("post_apply_wait_ms", 3000)))
             await logout_ont(page)
 
         if headed:
