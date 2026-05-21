@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 
 class OntAutomationError(RuntimeError):
@@ -503,6 +503,26 @@ async def try_login(page: Page, username: str, password: str) -> None:
     await user_input.fill(username)
     await pass_input.fill(password)
 
+    async def submit_login_form() -> None:
+        try:
+            await page.keyboard.press("Enter")
+            return
+        except Exception:
+            pass
+        try:
+            await page.evaluate(
+                """() => {
+                    const password = document.querySelector('input[type="password"]');
+                    const form = password && password.form;
+                    if (form) {
+                        if (typeof form.submit === 'function') form.submit();
+                        else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                    }
+                }"""
+            )
+        except Exception:
+            pass
+
     login_selectors = [
         "#loginbutton",
         "#loginBtn",
@@ -531,13 +551,13 @@ async def try_login(page: Page, username: str, password: str) -> None:
         try:
             await login_button.click(timeout=3000)
         except Exception:
-            await pass_input.press("Enter")
+            await submit_login_form()
     else:
         generic_buttons = login_root.locator("input[type='button']:visible, input[type='submit']:visible, button:visible")
         if await generic_buttons.count() == 1:
             await generic_buttons.nth(0).click(timeout=3000)
         else:
-            await pass_input.press("Enter")
+            await submit_login_form()
 
     try:
         await page.wait_for_function(
