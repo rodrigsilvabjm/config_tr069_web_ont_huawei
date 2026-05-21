@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 
 
 class OntAutomationError(RuntimeError):
@@ -129,6 +129,15 @@ def build_ont_url(ont: dict[str, Any], target: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise OntAutomationError("URL da ONT invalida. Exemplo: https://10.100.207.202:80")
     return f"{url}/index.asp" if parsed.path in {"", "/"} else url
+
+
+def alternate_protocol_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return url.replace("https://", "http://", 1)
+    if parsed.scheme == "http":
+        return url.replace("http://", "https://", 1)
+    return None
 
 
 def target_label(target: str) -> str:
@@ -499,6 +508,11 @@ async def try_login(page: Page, username: str, password: str) -> None:
         "#loginBtn",
         "#btnLogin",
         "#btn_login",
+        "#button",
+        "#Button",
+        "#btnSubmit",
+        "input[name='Login']",
+        "input[name='Submit']",
         "input[id*='login' i]",
         "button[id*='login' i]",
         "input[value='Login']",
@@ -512,14 +526,18 @@ async def try_login(page: Page, username: str, password: str) -> None:
         "a:has-text('Login')",
         "a:has-text('Entrar')",
     ]
-    login_button = await visible_locator(login_root, login_selectors, timeout=250)
+    login_button = await visible_locator(login_root, login_selectors, timeout=1000)
     if login_button is not None:
         try:
             await login_button.click(timeout=3000)
         except Exception:
             await pass_input.press("Enter")
     else:
-        await pass_input.press("Enter")
+        generic_buttons = login_root.locator("input[type='button']:visible, input[type='submit']:visible, button:visible")
+        if await generic_buttons.count() == 1:
+            await generic_buttons.nth(0).click(timeout=3000)
+        else:
+            await pass_input.press("Enter")
 
     try:
         await page.wait_for_function(
@@ -531,6 +549,14 @@ async def try_login(page: Page, username: str, password: str) -> None:
         )
     except PlaywrightTimeoutError:
         pass
+
+    if await page.locator("input[type='password']:visible").count() > 0:
+        retry_button = page.locator("input[type='button']:visible, input[type='submit']:visible, button:visible").first
+        try:
+            await retry_button.click(timeout=2000)
+            await page.wait_for_timeout(2500)
+        except Exception:
+            pass
 
     if await page.locator("input[type='password']:visible").count() > 0:
         raise OntAutomationError(
@@ -692,7 +718,16 @@ async def process_target(
         page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
         page.set_default_timeout(timeout_ms)
 
-        await page.goto(ont_url, wait_until="domcontentloaded")
+        try:
+            await page.goto(ont_url, wait_until="domcontentloaded")
+        except Exception as exc:
+            fallback_url = alternate_protocol_url(ont_url)
+            if fallback_url and ("ERR_CONNECTION_RESET" in str(exc) or "ERR_SSL" in str(exc) or "ERR_EMPTY_RESPONSE" in str(exc)):
+                print(f"[{label}] Falha em {ont_url}. Tentando {fallback_url}...")
+                ont_url = fallback_url
+                await page.goto(ont_url, wait_until="domcontentloaded")
+            else:
+                raise
         await proceed_through_privacy_warning(page)
         await try_login(page, ont["username"], ont["password"])
         model = await detect_ont_model(page)
