@@ -23,6 +23,8 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
+Em Ubuntu 20.04, o Python padrao costuma ser 3.8. Por isso o projeto fixa `playwright==1.48.0`, que e compativel com essa versao.
+
 ## Configurar
 
 Copie `config.example.json` para `config.json` e ajuste os valores:
