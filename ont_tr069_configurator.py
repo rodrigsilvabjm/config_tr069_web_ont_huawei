@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 
 
 class OntAutomationError(RuntimeError):
@@ -253,6 +253,41 @@ async def visible_locator(root: Page | Frame, selectors: list[str], timeout: int
     return None
 
 
+async def locate_login_fields(page: Page, user_selectors: list[str], pass_selectors: list[str]) -> tuple[Page | Frame | None, Locator | None, Locator | None]:
+    fast_user_selectors = [
+        "#txt_Username",
+        "input[name='txt_Username']",
+        "#Username",
+        "#username",
+        "#UserName",
+        "input[name='Username']",
+        "input[name='username']",
+    ]
+    fast_pass_selectors = [
+        "#txt_Password",
+        "input[name='txt_Password']",
+        "#Password",
+        "#password",
+        "input[name='Password']",
+        "input[name='password']",
+        "input[type='password']",
+    ]
+
+    for root in [page, *page.frames]:
+        user_input = await visible_locator(root, fast_user_selectors, timeout=180)
+        pass_input = await visible_locator(root, fast_pass_selectors, timeout=180)
+        if user_input is not None and pass_input is not None:
+            return root, user_input, pass_input
+
+    for root in [page, *page.frames]:
+        user_input = await visible_locator(root, user_selectors, timeout=350)
+        pass_input = await visible_locator(root, pass_selectors, timeout=350)
+        if user_input is not None and pass_input is not None:
+            return root, user_input, pass_input
+
+    return None, None, None
+
+
 async def input_after_label(root: Page | Frame, label_text: str) -> Locator:
     xpath = (
         "xpath=//*[normalize-space(.)="
@@ -445,19 +480,9 @@ async def try_login(page: Page, username: str, password: str) -> None:
         "input[type='password']:visible",
     ]
 
-    login_root: Page | Frame | None = None
-    user_input: Locator | None = None
-    pass_input: Locator | None = None
-
-    for root in [page, *page.frames]:
-        user_input = await visible_locator(root, user_selectors)
-        pass_input = await visible_locator(root, pass_selectors)
-        if user_input is not None and pass_input is not None:
-            login_root = root
-            break
+    login_root, user_input, pass_input = await locate_login_fields(page, user_selectors, pass_selectors)
 
     if login_root is None or user_input is None or pass_input is None:
-        await page.wait_for_timeout(1500)
         if await page.locator("text=Home Page").count() or await page.locator("text=Network connection status").count():
             print("Login nao necessario: a ONT ja parece estar autenticada.")
             return
@@ -487,24 +512,33 @@ async def try_login(page: Page, username: str, password: str) -> None:
         "a:has-text('Login')",
         "a:has-text('Entrar')",
     ]
-    login_button = await visible_locator(login_root, login_selectors, timeout=1200)
+    login_button = await visible_locator(login_root, login_selectors, timeout=250)
     if login_button is not None:
         try:
             await login_button.click(timeout=3000)
-            await page.wait_for_load_state("networkidle", timeout=12000)
         except Exception:
             await pass_input.press("Enter")
     else:
         await pass_input.press("Enter")
 
-    await page.wait_for_timeout(2500)
+    try:
+        await page.wait_for_function(
+            """() => !document.querySelector('input[type="password"]') ||
+                   document.body.innerText.includes('Logout') ||
+                   document.body.innerText.includes('Home Page') ||
+                   document.body.innerText.includes('System Tools')""",
+            timeout=5000,
+        )
+    except PlaywrightTimeoutError:
+        pass
+
     if await page.locator("input[type='password']:visible").count() > 0:
         raise OntAutomationError(
             "A senha foi enviada, mas a tela de login continuou aberta. Confira usuario/senha."
         )
 
     try:
-        await page.wait_for_load_state("networkidle", timeout=10000)
+        await page.wait_for_load_state("domcontentloaded", timeout=3000)
     except PlaywrightTimeoutError:
         return
 
