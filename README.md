@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.3.4`
+Versao atual: `1.3.5`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
@@ -15,6 +15,7 @@ Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a te
 - Vai ate a tela TR-069 conforme o perfil do modelo detectado.
 - Habilita ACS Management e Periodic Informing.
 - Preenche ACS URL, usuario, senha, Connection Request User/Password e DSCP.
+- Se `Informing Time` estiver vazio ou `0001-01-01T00:00:00Z`, usa `2009-12-20T12:23:34`.
 - Clica em `Apply`.
 - Desloga da ONT apos aplicar a configuracao.
 

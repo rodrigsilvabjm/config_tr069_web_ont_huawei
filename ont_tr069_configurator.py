@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 
 
 class OntAutomationError(RuntimeError):
@@ -160,7 +160,7 @@ async def goto_ont_page(page: Page, url: str, timeout: int = 15000) -> None:
         pass
 
 
-def hg8245q2_informing_time(tr069: dict[str, Any]) -> str:
+def normalized_informing_time(tr069: dict[str, Any]) -> str:
     value = str(tr069.get("informing_time") or "").strip()
     if not value or value == "0001-01-01T00:00:00Z":
         return "2009-12-20T12:23:34"
@@ -399,7 +399,7 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     await fill_by_label(root, "Enable ACS Management:", True)
     await fill_by_label(root, "Enable Periodic Informing:", True)
     await fill_by_label(root, "Informing Interval:", current_interval)
-    await fill_by_label(root, "Informing Time:", hg8245q2_informing_time(tr069))
+    await fill_by_label(root, "Informing Time:", normalized_informing_time(tr069))
     await fill_by_label(root, "ACS URL:", tr069["acs_url"])
     await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
     await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""), verify=False)
@@ -408,17 +408,11 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
 
 
-def expected_informing_time(profile: dict[str, Any], tr069: dict[str, Any]) -> str:
-    if uses_legacy_acs_flow(profile):
-        return hg8245q2_informing_time(tr069)
-    return str(tr069.get("informing_time", "0001-01-01T00:00:00Z"))
-
-
 async def verify_acs_persisted(root: Page | Frame, tr069: dict[str, Any], profile: dict[str, Any]) -> None:
     expected_values = {
         "Enable ACS Management:": "true",
         "Enable Periodic Informing:": "true",
-        "Informing Time:": expected_informing_time(profile, tr069),
+        "Informing Time:": normalized_informing_time(tr069),
         "ACS URL:": str(tr069["acs_url"]),
         "ACS User Name:": str(tr069.get("acs_username", "")),
         "Connection Request User Name:": str(tr069.get("connection_request_username", "")),
@@ -698,7 +692,7 @@ async def apply_tr069_settings(
         await fill_by_label(root, "Enable ACS Management:", True)
         await fill_by_label(root, "Enable Periodic Informing:", True)
         await fill_by_label(root, "Informing Interval:", tr069.get("informing_interval", 43200))
-        await fill_by_label(root, "Informing Time:", tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+        await fill_by_label(root, "Informing Time:", normalized_informing_time(tr069))
         await fill_by_label(root, "ACS URL:", tr069["acs_url"])
         await fill_by_label(root, "ACS User Name:", tr069.get("acs_username", ""))
         await fill_by_label(root, "ACS Password:", tr069.get("acs_password", ""), verify=False)
