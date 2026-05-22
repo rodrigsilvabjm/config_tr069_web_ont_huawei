@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 
 class OntAutomationError(RuntimeError):
@@ -754,13 +754,13 @@ async def process_target(
         page.set_default_timeout(timeout_ms)
 
         try:
-            await goto_ont_page(page, ont_url)
+            await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 30000)))
         except Exception as exc:
             fallback_url = alternate_protocol_url(ont_url)
             if fallback_url and ("ERR_CONNECTION_RESET" in str(exc) or "ERR_SSL" in str(exc) or "ERR_EMPTY_RESPONSE" in str(exc)):
                 print(f"[{label}] Falha em {ont_url}. Tentando {fallback_url}...")
                 ont_url = fallback_url
-                await goto_ont_page(page, ont_url)
+                await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 30000)))
             else:
                 raise
         await proceed_through_privacy_warning(page)
