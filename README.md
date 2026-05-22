@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.3.3`
+Versao atual: `1.3.4`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
@@ -21,9 +21,11 @@ Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a te
 ## Modelos suportados
 
 - `HG8245W5-6T`: fluxo ja validado na interface nova.
+- `EG8141A5`: fluxo da interface nova, igual ao `HG8245W5-6T`.
 - `HG8245Q2`: fluxo da interface antiga em `System Tools > TR-069`.
+- `HG8546M`: fluxo da interface antiga, igual ao `HG8245Q2`.
 
-Se um modelo novo aparecer como `UNKNOWN` no painel, envie print da tela TR-069 e o sistema pode ganhar um novo perfil.
+O sistema so retorna `SUCESSO` depois de reabrir a tela TR-069 e confirmar que os valores foram salvos. Se um modelo novo aparecer como `UNKNOWN` no painel, envie print da tela TR-069 e o sistema pode ganhar um novo perfil.
 
 ## Instalar
 

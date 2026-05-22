@@ -4,6 +4,6 @@ __pycache__/
 debug/
 web_data/
 config.json
+config.hg8245q2.debug.json
 .env
 *.log
-

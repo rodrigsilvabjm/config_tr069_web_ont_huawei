@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 
 class OntAutomationError(RuntimeError):
@@ -25,10 +25,22 @@ MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "tr069_paths": ["/html/ssmp/tr069/tr069.asp"],
         "menu_sequence": ["Advanced", "System Management", "TR-069"],
     },
+    "EG8141A5": {
+        "name": "EG8141A5",
+        "tr069_paths": ["/html/ssmp/tr069/tr069.asp"],
+        "menu_sequence": ["Advanced", "System Management", "TR-069"],
+    },
     "HG8245Q2": {
         "name": "HG8245Q2",
         "tr069_paths": [],
         "menu_sequence": ["System Tools", "TR-069"],
+        "legacy_acs_flow": True,
+    },
+    "HG8546M": {
+        "name": "HG8546M",
+        "tr069_paths": [],
+        "menu_sequence": ["System Tools", "TR-069"],
+        "legacy_acs_flow": True,
     },
 }
 
@@ -155,6 +167,10 @@ def hg8245q2_informing_time(tr069: dict[str, Any]) -> str:
     return value
 
 
+def uses_legacy_acs_flow(profile: dict[str, Any]) -> bool:
+    return bool(profile.get("legacy_acs_flow"))
+
+
 def target_label(target: str) -> str:
     parsed = urlparse(target)
     return parsed.netloc or target
@@ -188,7 +204,7 @@ def profile_for_model(model: str, browser_cfg: dict[str, Any]) -> dict[str, Any]
     custom_paths = browser_cfg.get("tr069_paths")
     if isinstance(custom_paths, list) and custom_paths:
         profile["tr069_paths"] = custom_paths
-    elif browser_cfg.get("tr069_path") and profile["name"] != "HG8245Q2":
+    elif browser_cfg.get("tr069_path") and not uses_legacy_acs_flow(profile):
         profile["tr069_paths"] = [browser_cfg["tr069_path"]]
     return profile
 
@@ -198,6 +214,7 @@ def deepcopy_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "name": profile.get("name", "default"),
         "tr069_paths": list(profile.get("tr069_paths", [])),
         "menu_sequence": list(profile.get("menu_sequence", [])),
+        "legacy_acs_flow": bool(profile.get("legacy_acs_flow", False)),
     }
 
 
@@ -391,14 +408,24 @@ async def fill_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
     await fill_by_label(root, "DSCP:", tr069.get("dscp", 0))
 
 
-async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None:
+def expected_informing_time(profile: dict[str, Any], tr069: dict[str, Any]) -> str:
+    if uses_legacy_acs_flow(profile):
+        return hg8245q2_informing_time(tr069)
+    return str(tr069.get("informing_time", "0001-01-01T00:00:00Z"))
+
+
+async def verify_acs_persisted(root: Page | Frame, tr069: dict[str, Any], profile: dict[str, Any]) -> None:
     expected_values = {
-        "Informing Time:": hg8245q2_informing_time(tr069),
+        "Enable ACS Management:": "true",
+        "Enable Periodic Informing:": "true",
+        "Informing Time:": expected_informing_time(profile, tr069),
         "ACS URL:": str(tr069["acs_url"]),
         "ACS User Name:": str(tr069.get("acs_username", "")),
         "Connection Request User Name:": str(tr069.get("connection_request_username", "")),
         "DSCP:": str(tr069.get("dscp", 0)),
     }
+    if not uses_legacy_acs_flow(profile):
+        expected_values["Informing Interval:"] = str(tr069.get("informing_interval", 43200))
 
     mismatches: list[str] = []
     for name, expected in expected_values.items():
@@ -407,11 +434,13 @@ async def verify_hg8245q2_acs(root: Page | Frame, tr069: dict[str, Any]) -> None
             mismatches.append(f"{name}: esperado {expected}, ficou {actual}")
 
     if mismatches:
-        raise OntAutomationError("HG8245Q2 nao salvou a configuracao TR-069: " + "; ".join(mismatches))
+        raise OntAutomationError(
+            f"{profile.get('name')} nao salvou a configuracao TR-069: " + "; ".join(mismatches)
+        )
 
 
 async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> None:
-    if profile.get("name") == "HG8245Q2":
+    if uses_legacy_acs_flow(profile):
         apply_after_dscp = root.locator(
             "xpath=//*[contains(normalize-space(.), 'DSCP:')]/following::input[@value='Apply' or @type='submit'][1]"
         ).first
@@ -425,7 +454,7 @@ async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> Non
             await page.wait_for_timeout(7000)
             return
         except Exception as exc:
-            raise OntAutomationError(f"HG8245Q2: nao consegui clicar no Apply apos DSCP: {exc}") from exc
+            raise OntAutomationError(f"{profile.get('name')}: nao consegui clicar no Apply apos DSCP: {exc}") from exc
     else:
         apply_selectors = [
             "#ACSbtnApply",
@@ -663,7 +692,7 @@ async def apply_tr069_settings(
     profile: dict[str, Any],
     inspect: bool = False,
 ) -> None:
-    if profile.get("name") == "HG8245Q2":
+    if uses_legacy_acs_flow(profile):
         await fill_hg8245q2_acs(root, tr069)
     else:
         await fill_by_label(root, "Enable ACS Management:", True)
@@ -693,12 +722,11 @@ async def apply_tr069_settings(
 
 
 async def verify_after_apply(page: Page, browser_cfg: dict[str, Any], profile: dict[str, Any], tr069: dict[str, Any]) -> None:
-    if profile.get("name") != "HG8245Q2":
-        return
-
-    await page.wait_for_timeout(int(browser_cfg.get("hg8245q2_save_wait_ms", 10000)))
+    wait_key = "hg8245q2_save_wait_ms" if uses_legacy_acs_flow(profile) else "post_apply_wait_ms"
+    default_wait = 10000 if uses_legacy_acs_flow(profile) else 5000
+    await page.wait_for_timeout(int(browser_cfg.get(wait_key, default_wait)))
     verified_root = await navigate_to_tr069(page, browser_cfg, profile)
-    await verify_hg8245q2_acs(verified_root, tr069)
+    await verify_acs_persisted(verified_root, tr069, profile)
 
 
 async def logout_ont(page: Page) -> None:
@@ -779,11 +807,11 @@ async def process_target(
         )
         if not dry_run:
             await verify_after_apply(page, browser_cfg, profile, config["tr069"])
-            if profile.get("name") == "HG8245Q2":
-                print("HG8245Q2: configuracao confirmada. Mantendo sessao aberta por alguns segundos antes do logout.")
+            if uses_legacy_acs_flow(profile):
+                print(f"{profile.get('name')}: configuracao confirmada. Mantendo sessao aberta por alguns segundos antes do logout.")
                 await page.wait_for_timeout(int(browser_cfg.get("hg8245q2_logout_wait_ms", 5000)))
             else:
-                await page.wait_for_timeout(int(browser_cfg.get("post_apply_wait_ms", 3000)))
+                await page.wait_for_timeout(int(browser_cfg.get("post_verify_wait_ms", 1000)))
             await logout_ont(page)
 
         if headed:
