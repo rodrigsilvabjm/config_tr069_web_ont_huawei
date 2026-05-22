@@ -108,6 +108,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$APP_DIR
 Environment=PLAYWRIGHT_BROWSERS_PATH=$APP_DIR/ms-playwright
+Environment=TZ=America/Sao_Paulo
 ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/web_server.py --host 0.0.0.0 --port $APP_PORT
 Restart=always
 RestartSec=5

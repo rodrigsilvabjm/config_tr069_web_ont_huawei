@@ -122,6 +122,17 @@ O primeiro acesso web da ONT aguarda ate 30 segundos por padrao:
 
 Se a tela de login abrir antes disso, o script segue imediatamente. Se nao abrir nesse tempo, marca timeout.
 
+## Horario do historico/XLS
+
+O historico usa o timezone do servidor. Para Brasil/Sao Paulo:
+
+```bash
+sudo timedatectl set-timezone America/Sao_Paulo
+sudo systemctl restart ont-tr069-web.service
+```
+
+O instalador tambem define `TZ=America/Sao_Paulo` no servico systemd.
+
 Se parar na tela de login, o script salva arquivos de diagnostico em `debug/`, como:
 
 - `debug/login_fields_not_found.png`
