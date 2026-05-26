@@ -18,7 +18,10 @@
   },
   "browser": {
     "timeout_ms": 30000,
-    "initial_goto_timeout_ms": 30000,
+    "initial_goto_timeout_ms": 45000,
+    "initial_goto_retry_timeout_ms": 45000,
+    "login_fields_wait_ms": 30000,
+    "login_fields_reload_interval_ms": 7000,
     "ignore_https_errors": true,
     "tr069_path": "/html/ssmp/tr069/tr069.asp",
     "headed_finish_wait_ms": 500,

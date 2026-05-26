@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.3.5`
+Versao atual: `1.3.6`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 
@@ -117,13 +117,20 @@ Para este firmware, o caminho direto da tela TR-069 e:
 
 Com esse caminho o script evita a tela `The requested URL was not found on this server.` e executa mais rapido. O diagnostico em execucao bem-sucedida fica desligado por padrao com `"save_success_debug": false`.
 
-O primeiro acesso web da ONT aguarda ate 30 segundos por padrao:
+O primeiro acesso web da ONT aguarda ate 45 segundos por padrao:
 
 ```json
-"initial_goto_timeout_ms": 30000
+"initial_goto_timeout_ms": 45000
 ```
 
-Se a tela de login abrir antes disso, o script segue imediatamente. Se nao abrir nesse tempo, marca timeout.
+Se a tela de login abrir antes disso, o script segue imediatamente. Se nao abrir nesse tempo, tenta recarregar uma vez usando `initial_goto_retry_timeout_ms`.
+
+Depois que a pagina abre, algumas ONTs demoram para renderizar usuario/senha. O script aguarda os campos por ate 30 segundos e recarrega a pagina a cada 7 segundos enquanto eles nao aparecem:
+
+```json
+"login_fields_wait_ms": 30000,
+"login_fields_reload_interval_ms": 7000
+```
 
 ## Horario do historico/XLS
 

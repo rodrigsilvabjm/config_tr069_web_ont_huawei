@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 
 
 class OntAutomationError(RuntimeError):
@@ -329,6 +329,56 @@ async def locate_login_fields(page: Page, user_selectors: list[str], pass_select
     return None, None, None
 
 
+async def page_looks_authenticated(page: Page) -> bool:
+    for selector in ["text=Home Page", "text=Network connection status", "text=Logout", "text=System Tools"]:
+        try:
+            if await page.locator(selector).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def wait_for_login_fields(
+    page: Page,
+    user_selectors: list[str],
+    pass_selectors: list[str],
+    timeout_ms: int,
+    reload_interval_ms: int,
+) -> tuple[Page | Frame | None, Locator | None, Locator | None]:
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    last_reload = asyncio.get_running_loop().time()
+    attempt = 0
+
+    while True:
+        login_root, user_input, pass_input = await locate_login_fields(page, user_selectors, pass_selectors)
+        if login_root is not None and user_input is not None and pass_input is not None:
+            return login_root, user_input, pass_input
+
+        if await page_looks_authenticated(page):
+            return None, None, None
+
+        now = asyncio.get_running_loop().time()
+        if now >= deadline:
+            return None, None, None
+
+        if reload_interval_ms > 0 and (now - last_reload) * 1000 >= reload_interval_ms:
+            attempt += 1
+            print(f"Tela de login ainda sem usuario/senha. Recarregando tentativa {attempt}...")
+            try:
+                await page.reload(wait_until="commit", timeout=10000)
+                await proceed_through_privacy_warning(page)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except PlaywrightTimeoutError:
+                    pass
+            except Exception:
+                pass
+            last_reload = now
+
+        await page.wait_for_timeout(700)
+
+
 async def input_after_label(root: Page | Frame, label_text: str) -> Locator:
     xpath = (
         "xpath=//*[normalize-space(.)="
@@ -490,7 +540,7 @@ async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> Non
     )
 
 
-async def try_login(page: Page, username: str, password: str) -> None:
+async def try_login(page: Page, username: str, password: str, browser_cfg: dict[str, Any]) -> None:
     await proceed_through_privacy_warning(page)
 
     user_selectors = [
@@ -527,14 +577,22 @@ async def try_login(page: Page, username: str, password: str) -> None:
         "input[type='password']:visible",
     ]
 
-    login_root, user_input, pass_input = await locate_login_fields(page, user_selectors, pass_selectors)
+    login_wait_ms = int(browser_cfg.get("login_fields_wait_ms", 30000))
+    login_reload_ms = int(browser_cfg.get("login_fields_reload_interval_ms", 7000))
+    login_root, user_input, pass_input = await wait_for_login_fields(
+        page,
+        user_selectors,
+        pass_selectors,
+        timeout_ms=login_wait_ms,
+        reload_interval_ms=login_reload_ms,
+    )
 
     if login_root is None or user_input is None or pass_input is None:
-        if await page.locator("text=Home Page").count() or await page.locator("text=Network connection status").count():
+        if await page_looks_authenticated(page):
             print("Login nao necessario: a ONT ja parece estar autenticada.")
             return
         raise OntAutomationError(
-            "Nao encontrei os campos de usuario/senha."
+            f"Nao encontrei os campos de usuario/senha apos aguardar {login_wait_ms} ms."
         )
 
     print("Tela de login encontrada. Preenchendo usuario e senha...")
@@ -776,17 +834,20 @@ async def process_target(
         page.set_default_timeout(timeout_ms)
 
         try:
-            await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 30000)))
+            await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 45000)))
         except Exception as exc:
             fallback_url = alternate_protocol_url(ont_url)
             if fallback_url and ("ERR_CONNECTION_RESET" in str(exc) or "ERR_SSL" in str(exc) or "ERR_EMPTY_RESPONSE" in str(exc)):
                 print(f"[{label}] Falha em {ont_url}. Tentando {fallback_url}...")
                 ont_url = fallback_url
-                await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 30000)))
+                await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_timeout_ms", 45000)))
+            elif isinstance(exc, PlaywrightTimeoutError) or "Timeout" in str(exc):
+                print(f"[{label}] Primeiro acesso demorou demais. Tentando recarregar {ont_url}...")
+                await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_retry_timeout_ms", 45000)))
             else:
                 raise
         await proceed_through_privacy_warning(page)
-        await try_login(page, ont["username"], ont["password"])
+        await try_login(page, ont["username"], ont["password"], browser_cfg)
         model = await detect_ont_model(page)
         profile = profile_for_model(model, browser_cfg)
         print(f"[{label}] Modelo detectado: {model}. Perfil: {profile['name']}")
