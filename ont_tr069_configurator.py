@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 
 
 class OntAutomationError(RuntimeError):
@@ -160,6 +160,26 @@ async def goto_ont_page(page: Page, url: str, timeout: int = 15000) -> None:
         pass
 
 
+def is_navigation_context_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "Execution context was destroyed" in text
+        or "most likely because of a navigation" in text
+        or "Cannot find context with specified id" in text
+    )
+
+
+async def safe_locator_count(locator: Locator, retries: int = 2, wait_ms: int = 500) -> int:
+    for attempt in range(retries + 1):
+        try:
+            return await locator.count()
+        except Exception as exc:
+            if not is_navigation_context_error(exc) or attempt >= retries:
+                raise
+            await asyncio.sleep(wait_ms / 1000)
+    return 0
+
+
 def normalized_informing_time(tr069: dict[str, Any]) -> str:
     value = str(tr069.get("informing_time") or "").strip()
     if not value or value == "0001-01-01T00:00:00Z":
@@ -289,7 +309,10 @@ async def visible_locator(root: Page | Frame, selectors: list[str], timeout: int
             return locator
         except PlaywrightTimeoutError:
             continue
-        except Exception:
+        except Exception as exc:
+            if is_navigation_context_error(exc):
+                await get_root_page(root).wait_for_timeout(500)
+                continue
             continue
     return None
 
@@ -332,9 +355,12 @@ async def locate_login_fields(page: Page, user_selectors: list[str], pass_select
 async def page_looks_authenticated(page: Page) -> bool:
     for selector in ["text=Home Page", "text=Network connection status", "text=Logout", "text=System Tools"]:
         try:
-            if await page.locator(selector).count() > 0:
+            if await safe_locator_count(page.locator(selector)) > 0:
                 return True
-        except Exception:
+        except Exception as exc:
+            if is_navigation_context_error(exc):
+                await page.wait_for_timeout(500)
+                continue
             continue
     return False
 
@@ -513,7 +539,7 @@ async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> Non
     for selector in apply_selectors:
         button = root.locator(selector)
         try:
-            if await button.count() == 1:
+            if await safe_locator_count(button) == 1:
                 page = get_root_page(root)
                 try:
                     await button.click(timeout=4000)
@@ -525,7 +551,7 @@ async def click_apply_button(root: Page | Frame, profile: dict[str, Any]) -> Non
             continue
 
     buttons = root.locator("input[value='Apply'], button:has-text('Apply')")
-    count = await buttons.count()
+    count = await safe_locator_count(buttons)
     if count == 1:
         page = get_root_page(root)
         await buttons.click(timeout=4000)
@@ -650,7 +676,7 @@ async def try_login(page: Page, username: str, password: str, browser_cfg: dict[
             await submit_login_form()
     else:
         generic_buttons = login_root.locator("input[type='button']:visible, input[type='submit']:visible, button:visible")
-        if await generic_buttons.count() == 1:
+        if await safe_locator_count(generic_buttons) == 1:
             await generic_buttons.nth(0).click(timeout=3000)
         else:
             await submit_login_form()
@@ -666,7 +692,7 @@ async def try_login(page: Page, username: str, password: str, browser_cfg: dict[
     except PlaywrightTimeoutError:
         pass
 
-    if await page.locator("input[type='password']:visible").count() > 0:
+    if await safe_locator_count(page.locator("input[type='password']:visible")) > 0:
         retry_button = page.locator("input[type='button']:visible, input[type='submit']:visible, button:visible").first
         try:
             await retry_button.click(timeout=2000)
@@ -674,7 +700,7 @@ async def try_login(page: Page, username: str, password: str, browser_cfg: dict[
         except Exception:
             pass
 
-    if await page.locator("input[type='password']:visible").count() > 0:
+    if await safe_locator_count(page.locator("input[type='password']:visible")) > 0:
         raise OntAutomationError(
             "A senha foi enviada, mas a tela de login continuou aberta. Confira usuario/senha."
         )
@@ -689,11 +715,14 @@ async def find_tr069_root(page: Page) -> Page | Frame:
     roots: list[Page | Frame] = [page, *page.frames]
     for root in roots:
         try:
-            if await root.locator("text=ACS Configuration").count() > 0:
+            if await safe_locator_count(root.locator("text=ACS Configuration")) > 0:
                 return root
-            if await root.locator("text=ACS Parameter Settings").count() > 0:
+            if await safe_locator_count(root.locator("text=ACS Parameter Settings")) > 0:
                 return root
-        except Exception:
+        except Exception as exc:
+            if is_navigation_context_error(exc):
+                await page.wait_for_timeout(500)
+                continue
             continue
     raise OntAutomationError("Nao encontrei a tela ACS Configuration/TR-069.")
 
@@ -717,9 +746,12 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: di
     for selector in ["#addconfig", "#systool", "#tr069config"]:
         try:
             item = page.locator(selector)
-            if await item.count() == 1:
+            if await safe_locator_count(item) == 1:
                 await item.click(timeout=2500)
-        except Exception:
+        except Exception as exc:
+            if is_navigation_context_error(exc):
+                await page.wait_for_timeout(500)
+                continue
             continue
     for menu_label in profile.get("menu_sequence", []):
         try:
