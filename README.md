@@ -1,6 +1,6 @@
 # Configurador TR-069 para ONT Huawei
 
-Versao atual: `1.3.6`
+Versao atual: `1.3.7`
 
 Automacao local para acessar a interface web de uma ONT Huawei, navegar ate a tela de TR-069/ACS e configurar os dados do servidor ACS.
 

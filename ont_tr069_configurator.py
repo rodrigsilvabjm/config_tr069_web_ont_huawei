@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 
 
 class OntAutomationError(RuntimeError):

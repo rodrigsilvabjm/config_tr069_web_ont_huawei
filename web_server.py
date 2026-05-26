@@ -509,6 +509,9 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar select { width: auto; margin-top: 0; padding: 6px 8px; }
     .muted { color: #5b6875; font-size: 13px; }
     canvas { max-width: 320px; max-height: 220px; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 18px; align-items: start; }
+    .chart-box { min-width: 0; }
+    .chart-title { font-weight: 700; margin-bottom: 8px; }
     @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -553,8 +556,18 @@ INDEX_HTML = r"""<!doctype html>
 
     <section>
       <h2>Resultado atual</h2>
-      <canvas id="chart" width="320" height="220"></canvas>
-      <div class="muted" id="progress">Nenhum lote em execução.</div>
+      <div class="chart-grid">
+        <div class="chart-box">
+          <div class="chart-title">Lote atual</div>
+          <canvas id="chart" width="320" height="220"></canvas>
+          <div class="muted" id="progress">Nenhum lote em execucao.</div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Geral historico</div>
+          <canvas id="overallChart" width="320" height="220"></canvas>
+          <div class="muted" id="overallSummary">Sucesso: 0 | Erro: 0</div>
+        </div>
+      </div>
       <table>
         <thead><tr><th>ONT</th><th>Modelo</th><th>Status</th><th>Erro</th></tr></thead>
         <tbody id="results"></tbody>
@@ -608,6 +621,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!res.ok) { $("message").textContent = data.error || "Erro ao iniciar."; return; }
       currentJob = data.id;
       $("message").textContent = "Lote iniciado.";
+      loadHistory({ resetPage: false });
       pollJob();
     }
 
@@ -617,20 +631,22 @@ INDEX_HTML = r"""<!doctype html>
       const job = await res.json();
       renderJob(job);
       if (["queued","running"].includes(job.status)) setTimeout(pollJob, 1500);
-      else loadHistory();
+      else loadHistory({ resetPage: false });
     }
 
     function renderJob(job) {
       $("progress").textContent = `${job.status} | ${job.completed || 0}/${job.total || 0}`;
       $("results").innerHTML = (job.results || []).map(r => `<tr><td>${r.target}</td><td>${r.model || ""}</td><td class="${r.status === "SUCESSO" ? "ok" : "err"}">${r.status}</td><td>${r.error || ""}</td></tr>`).join("");
-      drawChart(job.success_count || 0, job.error_count || 0);
+      drawChart("chart", job.success_count || 0, job.error_count || 0);
     }
 
-    async function loadHistory() {
+    async function loadHistory(options = {}) {
+      const resetPage = options.resetPage !== false;
       const res = await fetch("/api/history", { headers: headers() });
       historyItems = await res.json();
-      historyPage = 1;
+      if (resetPage) historyPage = 1;
       renderHistory();
+      renderOverallChart();
     }
 
     function renderHistory() {
@@ -666,8 +682,18 @@ INDEX_HTML = r"""<!doctype html>
       window.location.href = "/api/history/export.xls";
     }
 
-    function drawChart(success, error) {
-      const canvas = $("chart"), ctx = canvas.getContext("2d");
+    function renderOverallChart() {
+      const totals = historyItems.reduce((acc, job) => {
+        acc.success += Number(job.success_count || 0);
+        acc.error += Number(job.error_count || 0);
+        return acc;
+      }, { success: 0, error: 0 });
+      drawChart("overallChart", totals.success, totals.error);
+      $("overallSummary").textContent = `Sucesso: ${totals.success} | Erro: ${totals.error}`;
+    }
+
+    function drawChart(canvasId, success, error) {
+      const canvas = $(canvasId), ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       const total = success + error || 1;
       const values = [
@@ -686,6 +712,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     loadHistory();
+    setInterval(() => loadHistory({ resetPage: false }), 10000);
   </script>
 </body>
 </html>"""
