@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Frame, Locator, Page, TimeoutError as 
 from playwright.async_api import async_playwright
 
 
-APP_VERSION = "1.3.8"
+APP_VERSION = "1.3.9"
 
 
 class OntAutomationError(RuntimeError):
@@ -711,37 +711,55 @@ async def try_login(page: Page, username: str, password: str, browser_cfg: dict[
         return
 
 
-async def find_tr069_root(page: Page) -> Page | Frame:
-    roots: list[Page | Frame] = [page, *page.frames]
-    for root in roots:
-        try:
-            if await safe_locator_count(root.locator("text=ACS Configuration")) > 0:
-                return root
-            if await safe_locator_count(root.locator("text=ACS Parameter Settings")) > 0:
-                return root
-        except Exception as exc:
-            if is_navigation_context_error(exc):
-                await page.wait_for_timeout(500)
+async def find_tr069_root(page: Page, timeout_ms: int = 0) -> Page | Frame:
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    while True:
+        roots: list[Page | Frame] = [page, *page.frames]
+        for root in roots:
+            try:
+                if await safe_locator_count(root.locator("text=ACS Configuration")) > 0:
+                    return root
+                if await safe_locator_count(root.locator("text=ACS Parameter Settings")) > 0:
+                    return root
+            except Exception as exc:
+                if is_navigation_context_error(exc):
+                    await page.wait_for_timeout(500)
+                    continue
                 continue
-            continue
+
+        if timeout_ms <= 0 or asyncio.get_running_loop().time() >= deadline:
+            break
+        await page.wait_for_timeout(500)
     raise OntAutomationError("Nao encontrei a tela ACS Configuration/TR-069.")
 
 
 async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: dict[str, Any]) -> Page | Frame:
     base_url = page.url.split("/index.asp")[0].split("/html/")[0].rstrip("/")
+    direct_timeout = int(browser_cfg.get("tr069_goto_timeout_ms", 30000))
+    index_timeout = int(browser_cfg.get("tr069_index_timeout_ms", 30000))
+    screen_wait_ms = int(browser_cfg.get("tr069_screen_wait_ms", 15000))
+
+    try:
+        return await find_tr069_root(page, timeout_ms=1500)
+    except OntAutomationError:
+        pass
+
     for raw_path in profile.get("tr069_paths", []):
         tr069_path = str(raw_path)
         if not tr069_path.startswith("/"):
             tr069_path = f"/{tr069_path}"
         try:
             print(f"Abrindo TR-069 diretamente em {tr069_path}...")
-            await goto_ont_page(page, f"{base_url}{tr069_path}", timeout=8000)
+            await goto_ont_page(page, f"{base_url}{tr069_path}", timeout=direct_timeout)
             await proceed_through_privacy_warning(page)
-            return await find_tr069_root(page)
+            return await find_tr069_root(page, timeout_ms=screen_wait_ms)
         except Exception:
             print("Caminho direto nao abriu a tela TR-069. Tentando proxima opcao...")
 
-    await goto_ont_page(page, f"{base_url}/index.asp", timeout=10000)
+    try:
+        await goto_ont_page(page, f"{base_url}/index.asp", timeout=index_timeout)
+    except Exception as exc:
+        print(f"Index da ONT demorou ao reabrir. Tentando navegar pelo estado atual: {exc}")
     await proceed_through_privacy_warning(page)
     for selector in ["#addconfig", "#systool", "#tr069config"]:
         try:
@@ -755,12 +773,15 @@ async def navigate_to_tr069(page: Page, browser_cfg: dict[str, Any], profile: di
             continue
     for menu_label in profile.get("menu_sequence", []):
         try:
-            await click_first_visible(page, [menu_label], timeout=1600)
+            await click_first_visible(page, [menu_label], timeout=3000)
             await page.wait_for_timeout(300)
         except OntAutomationError:
             pass
-    await page.wait_for_load_state("networkidle", timeout=10000)
-    return await find_tr069_root(page)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except PlaywrightTimeoutError:
+        pass
+    return await find_tr069_root(page, timeout_ms=screen_wait_ms)
 
 
 async def pause_for_inspection(message: str) -> None:
@@ -805,12 +826,54 @@ async def apply_tr069_settings(
     await click_apply_button(root, profile)
 
 
-async def verify_after_apply(page: Page, browser_cfg: dict[str, Any], profile: dict[str, Any], tr069: dict[str, Any]) -> None:
+def is_transient_tr069_reopen_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "Nao encontrei a tela ACS Configuration/TR-069" in text
+        or "Timeout" in text
+        or "ERR_CONNECTION_RESET" in text
+        or "ERR_EMPTY_RESPONSE" in text
+    )
+
+
+async def relogin_ont(page: Page, ont_url: str, username: str, password: str, browser_cfg: dict[str, Any]) -> None:
+    await logout_ont(page)
+    await goto_ont_page(page, ont_url, timeout=int(browser_cfg.get("initial_goto_retry_timeout_ms", 45000)))
+    await proceed_through_privacy_warning(page)
+    await try_login(page, username, password, browser_cfg)
+
+
+async def verify_after_apply(
+    page: Page,
+    browser_cfg: dict[str, Any],
+    profile: dict[str, Any],
+    tr069: dict[str, Any],
+    ont_url: str,
+    username: str,
+    password: str,
+) -> None:
     wait_key = "hg8245q2_save_wait_ms" if uses_legacy_acs_flow(profile) else "post_apply_wait_ms"
     default_wait = 10000 if uses_legacy_acs_flow(profile) else 5000
     await page.wait_for_timeout(int(browser_cfg.get(wait_key, default_wait)))
-    verified_root = await navigate_to_tr069(page, browser_cfg, profile)
-    await verify_acs_persisted(verified_root, tr069, profile)
+
+    try:
+        verified_root = await navigate_to_tr069(page, browser_cfg, profile)
+        await verify_acs_persisted(verified_root, tr069, profile)
+        return
+    except Exception as first_exc:
+        if not is_transient_tr069_reopen_error(first_exc):
+            raise
+        print(f"Aviso: nao consegui validar TR-069 apos Apply. Vou deslogar, logar novamente e tentar de novo: {first_exc}")
+
+    try:
+        await relogin_ont(page, ont_url, username, password, browser_cfg)
+        verified_root = await navigate_to_tr069(page, browser_cfg, profile)
+        await verify_acs_persisted(verified_root, tr069, profile)
+    except Exception as second_exc:
+        if is_transient_tr069_reopen_error(second_exc):
+            print(f"Aviso: Apply foi enviado, mas nao consegui reabrir TR-069 para validar: {second_exc}")
+            return
+        raise
 
 
 async def logout_ont(page: Page) -> None:
@@ -893,7 +956,15 @@ async def process_target(
             inspect=inspect,
         )
         if not dry_run:
-            await verify_after_apply(page, browser_cfg, profile, config["tr069"])
+            await verify_after_apply(
+                page,
+                browser_cfg,
+                profile,
+                config["tr069"],
+                ont_url,
+                ont["username"],
+                ont["password"],
+            )
             if uses_legacy_acs_flow(profile):
                 print(f"{profile.get('name')}: configuracao confirmada. Mantendo sessao aberta por alguns segundos antes do logout.")
                 await page.wait_for_timeout(int(browser_cfg.get("hg8245q2_logout_wait_ms", 5000)))
